@@ -1,23 +1,29 @@
-# idem.py — Find Duplicate Images
+# idem.py — Find Duplicate Images and Videos
 
 ### Why would I want to use idem?
 You are a photographer with a media collection that has duplicate images/videos and you want to retain certain copies e.g. the ones with the highest resolution.
 
-### What are duplicate images or vides?
-The same photo or video at either the same or different resolutions, compression levels, or formats.
+### What are duplicate images or videos?
+Copies of the same photo or video at either the same or different resolutions, compression levels, or formats.
 
 ### How does idem help me?
-`idem` determines which images and videos "look" the same and groups all copies identical media together. It then optionally presents these groups together in your default internet browser and for each group it lets you select one or more copies to retain. It suggests retaining only the highest resolution replica by default, and it also attempts to pick the best folder and media file name from the options by applying some simple heuristics. You are free to override all or none of these choices.
+`idem` determines which images and videos "look" the same and groups all copies of identical media together. It then optionally presents these groups together in your default internet browser. For each group, it lets you select one or more copies to retain. It suggests retaining only the highest resolution replica by default, and it also attempts to pick the best folder and media file name from the options by applying some simple heuristics. You are free to override all or none of these choices.
 
 By default `idem` just detects and prints out information about groups of "matching" media files. It supports two modes to delete duplicates - `--review` which allows you to visually see the files in your browser, and `--interactive` which prompts you for each group in the terminal. Most users will want to use the `--review` mode.
 
 ### What are the limitations?
 `idem` uses two different algorithms called `pHash` (Perceptual Hashing) and `dHash` (Difference Hashing). These algorithms are not perfect, and images that are very slightly different may be detected as duplicates. E.g. photos of a slowly moving subject shot in burst mode.
 
-The tool has an `exact` match mode where it checks that the replicas are exactly the same. This will not detect copies of the same image or video at different resolutions. 
+The tool has an `exact` match mode where it checks that the replicas are exactly the same. This will not detect copies of the same image or video at different resolutions.
 
 ### Any other caveats?
 The tool assumes you are comfortable installing the [Python Language](https://www.python.org/downloads/) on your machine, installing `idem` dependencies and invoking the tool from the command-line.
+
+The first run of the program could take a few hours depending on the size of your media library because it has to compute the perceptual hash for each file. These hashes are stored on disk for subsequent runs under a `__databases` sub-directory. E.g. for a 1TB collection of photos and videos, expect the first run to take 2-3 hours (assuming your media is on SSD storage).
+
+Do not delete the hash files or directories else `idem` will have to compute them all over again. The hashes are updated in case any files are deleted or new files added between successive runs of the tool.
+
+Finally, this tool was largely written with the assistance of a coding agent (Claude Code). 
 
 ### How does idem ensure the safety of my data?
 Removed files are moved to a sub-directory named `__duplicate_files_trash/` — they are never deleted outright. So you can always recover them manually or choose to permanently delete the trashed files yourself.
@@ -90,7 +96,7 @@ python idem.py <directory> [options]
 | `--verify-trash` | Check that every file in `__duplicate_files_trash/` has a perceptual match in `<directory>`. Reports files with no match (potential incorrect trashing). Exits with code 1 if any are found |
 
 ### Advanced options
-Most users will not need these options and changing them is not recommended. The most interesting of these options is `--threshold`. Increeasing the threshold will allow _less similar_ images to be detected as duplicates and could be useful to find visually similar images in your collection. However it should be used with extreme care.
+Most users will not need these options and changing them is not recommended. The most interesting of these options is `--threshold`. Increasing the threshold will allow _less similar_ images to be detected as duplicates and could be useful to find visually similar images in your collection. However it should be used with extreme care.
 
 | Argument | Description |
 |----------|-------------|
