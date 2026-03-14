@@ -142,7 +142,7 @@ def load_cache(cache_path: str) -> dict:
                 try:
                     phash = row.get("phash", "")
                     dhash = row.get("dhash", "")
-                    if not _valid_hex(phash) or not _valid_hex(dhash):
+                    if not _valid_hex(phash) or (dhash and not _valid_hex(dhash)):
                         continue  # skip rows with missing or corrupt hashes
                     cache[path_without_drive(row["path"])] = {
                         "size":  int(row["size"]),
