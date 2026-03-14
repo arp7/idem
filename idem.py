@@ -1805,29 +1805,15 @@ def _resolve_transform(r: dict, keep_set: set, dir_resolved: Path):
     return src, dst
 
 
-def launch_review_ui(groups: list, directory: str, page_size: int = 10,
-                     ignore: list | None = None) -> None:
-    """Start a local Flask server and open a browser-based duplicate review UI."""
-    if not groups:
-        print("\nNo duplicate groups found. Nothing to review.")
-        return
+def _build_review_app(groups: list, directory: str, page_size: int = 10,
+                      ignore: list | None = None):
+    """Build the Flask app for the review UI and return (app, shutdown_event).
 
-    try:
-        from flask import Flask, jsonify, request, send_file, abort, Response
-    except ImportError:
-        print("Error: Flask is required for --review.", file=sys.stderr)
-        print("  pip install flask", file=sys.stderr)
-        sys.exit(1)
-
-    import logging
+    Separated from launch_review_ui so tests can construct the app directly
+    without starting a server or blocking.
+    """
+    from flask import Flask, jsonify, request, send_file, abort, Response
     import threading
-    import time
-    import webbrowser
-
-    logging.getLogger("werkzeug").setLevel(logging.ERROR)
-
-    import flask.cli
-    flask.cli.show_server_banner = lambda *_a, **_kw: None
 
     app = Flask(__name__)
     # Sort groups globally by their first folder so same-folder duplicates
@@ -1953,6 +1939,33 @@ def launch_review_ui(groups: list, directory: str, page_size: int = 10,
     def shutdown():
         shutdown_event.set()
         return "", 204
+
+    return app, shutdown_event
+
+
+def launch_review_ui(groups: list, directory: str, page_size: int = 10,
+                     ignore: list | None = None) -> None:
+    """Start a local Flask server and open a browser-based duplicate review UI."""
+    if not groups:
+        print("\nNo duplicate groups found. Nothing to review.")
+        return
+
+    try:
+        app, shutdown_event = _build_review_app(groups, directory, page_size, ignore)
+    except ImportError:
+        print("Error: Flask is required for --review.", file=sys.stderr)
+        print("  pip install flask", file=sys.stderr)
+        sys.exit(1)
+
+    import logging
+    import threading
+    import time
+    import webbrowser
+
+    logging.getLogger("werkzeug").setLevel(logging.ERROR)
+
+    import flask.cli
+    flask.cli.show_server_banner = lambda *_a, **_kw: None
 
     import socket
     import urllib.request

@@ -12,6 +12,7 @@ import pytest
 from PIL import Image
 import imagehash
 
+import idem as idem_module
 from idem import (
     CACHE_FIELDS,
     CACHE_FILENAME,
@@ -19,24 +20,31 @@ from idem import (
     N_VIDEO_FRAMES,
     VCACHE_FIELDS,
     VCACHE_FILENAME,
+    _FULL_HASH_THRESHOLD,
     _TS_TOLERANCE,
+    _collect_stale,
+    _file_checksum,
     _folder_score,
     _get_video_duration,
     _name_score,
     _open_vcache_for_append,
     _resolve_transform,
     _smart_defaults,
+    _valid_hex,
     _video_distance,
+    build_exact_index,
     build_hashes,
     build_video_hashes,
     compute_video_hashes,
     ffmpeg_available,
     fmt_size,
     group_duplicates,
+    group_exact_duplicates,
     group_video_duplicates,
     load_cache,
     load_vcache,
     open_cache_for_append,
+    parse_size,
     path_without_drive,
     save_cache,
     save_vcache,
@@ -2139,3 +2147,543 @@ class TestBuildVideoHashes:
                 cache_out.close()
         loaded = load_vcache(cache_path)
         assert path_without_drive(path) in loaded
+
+
+# ── Priority 4 — Helper unit tests ────────────────────────────────────────────
+
+
+class TestValidHex:
+    def test_empty_string_returns_false(self):
+        assert _valid_hex("") is False
+
+    def test_single_digit(self):
+        assert _valid_hex("0") is True
+
+    def test_all_lowercase_hex(self):
+        assert _valid_hex("deadbeef") is True
+
+    def test_all_uppercase_hex(self):
+        assert _valid_hex("DEADBEEF") is True
+
+    def test_mixed_case_hex(self):
+        assert _valid_hex("aAbBcCdD") is True
+
+    def test_invalid_char(self):
+        assert _valid_hex("zzzz") is False
+
+    def test_hex_prefix_rejected(self):
+        # 'x' is not a valid hex character
+        assert _valid_hex("0x1234") is False
+
+
+class TestFmtSizeExtra:
+    def test_terabytes(self):
+        assert "TB" in fmt_size(5 * 1024 ** 4)
+
+    def test_boundary_1023_is_bytes(self):
+        assert "B" in fmt_size(1023)
+
+    def test_boundary_1024_is_kb(self):
+        assert "KB" in fmt_size(1024)
+
+
+class TestPathWithoutDriveExtra:
+    def test_unc_path(self):
+        result = path_without_drive("\\\\server\\share\\file.jpg")
+        assert "file.jpg" in result
+        assert not result.startswith("\\\\server")
+
+
+# ── Priority 1 — Zero-coverage core functions ─────────────────────────────────
+
+
+class TestParseSize:
+    def test_bare_integer(self):
+        assert parse_size("500") == 500
+
+    def test_b_suffix(self):
+        assert parse_size("512b") == 512
+
+    def test_kb_lowercase(self):
+        assert parse_size("50kb") == 50 * 1024
+
+    def test_kb_uppercase(self):
+        assert parse_size("50KB") == 50 * 1024
+
+    def test_mb(self):
+        assert parse_size("2MB") == 2 * 1024 ** 2
+
+    def test_gb(self):
+        assert parse_size("1GB") == 1024 ** 3
+
+    def test_tb(self):
+        assert parse_size("1TB") == 1024 ** 4
+
+    def test_decimal_kb(self):
+        assert parse_size("1.5kb") == int(1.5 * 1024)
+
+    def test_decimal_mb(self):
+        assert parse_size("2.5MB") == int(2.5 * 1024 ** 2)
+
+    def test_case_insensitive_mb(self):
+        assert parse_size("2mb") == 2 * 1024 ** 2
+
+    def test_leading_whitespace_stripped(self):
+        assert parse_size("  10kb") == 10 * 1024
+
+    def test_invalid_string_raises(self):
+        with pytest.raises((ValueError, TypeError)):
+            parse_size("abc")
+
+    def test_empty_string_raises(self):
+        with pytest.raises((ValueError, TypeError)):
+            parse_size("")
+
+
+class TestFileChecksum:
+    def test_result_is_64_char_hex(self, tmp_path):
+        p = tmp_path / "a.bin"
+        p.write_bytes(b"hello world")
+        result = _file_checksum(str(p))
+        assert len(result) == 64
+        assert _valid_hex(result)
+
+    def test_identical_content_same_checksum(self, tmp_path):
+        data = b"same content here" * 10
+        p1 = tmp_path / "a.bin"
+        p2 = tmp_path / "b.bin"
+        p1.write_bytes(data)
+        p2.write_bytes(data)
+        assert _file_checksum(str(p1)) == _file_checksum(str(p2))
+
+    def test_different_content_different_checksum(self, tmp_path):
+        p1 = tmp_path / "a.bin"
+        p2 = tmp_path / "b.bin"
+        p1.write_bytes(b"content A")
+        p2.write_bytes(b"content B")
+        assert _file_checksum(str(p1)) != _file_checksum(str(p2))
+
+    def test_same_bytes_different_size_different_checksum(self, tmp_path):
+        """Size is mixed into the digest first, so two files with different sizes
+        produce different checksums even if their sampled windows are identical."""
+        old_threshold = idem_module._FULL_HASH_THRESHOLD
+        old_sample = idem_module._SAMPLE_SIZE
+        try:
+            idem_module._FULL_HASH_THRESHOLD = 30
+            idem_module._SAMPLE_SIZE = 10
+            p30 = tmp_path / "thirty.bin"
+            p31 = tmp_path / "thirtyone.bin"
+            # Both files start with the same 10 bytes; they differ only in total size.
+            p30.write_bytes(b"0123456789" * 3)          # 30 bytes
+            p31.write_bytes(b"0123456789" * 3 + b"X")   # 31 bytes
+            assert _file_checksum(str(p30)) != _file_checksum(str(p31))
+        finally:
+            idem_module._FULL_HASH_THRESHOLD = old_threshold
+            idem_module._SAMPLE_SIZE = old_sample
+
+    def test_large_file_sampling_misses_gap_content(self, tmp_path):
+        """Two files that differ only in un-sampled gap bytes produce the same
+        checksum, confirming the sampling path is exercised."""
+        old_threshold = idem_module._FULL_HASH_THRESHOLD
+        old_sample = idem_module._SAMPLE_SIZE
+        try:
+            idem_module._FULL_HASH_THRESHOLD = 30
+            idem_module._SAMPLE_SIZE = 10
+            # For a 40-byte file with sample_size=10:
+            #   window 1: bytes [0:10]
+            #   window 2: seek(40//2 - 10//2 = 15) → bytes [15:25]
+            #   window 3: seek(-10, 2) → bytes [30:40]
+            # Un-sampled regions: [10:15] and [25:30]
+            prefix = b"P" * 10
+            gap    = b"G" * 5
+            mid    = b"M" * 10
+            gap2   = b"G" * 5
+            suffix = b"S" * 10
+            file_a = prefix + gap  + mid + gap2 + suffix   # 40 bytes, gap=G
+            file_b = prefix + b"X"*5 + mid + b"X"*5 + suffix  # 40 bytes, gap=X
+            p_a = tmp_path / "file_a.bin"
+            p_b = tmp_path / "file_b.bin"
+            p_a.write_bytes(file_a)
+            p_b.write_bytes(file_b)
+            assert _file_checksum(str(p_a)) == _file_checksum(str(p_b))
+        finally:
+            idem_module._FULL_HASH_THRESHOLD = old_threshold
+            idem_module._SAMPLE_SIZE = old_sample
+
+
+class TestCollectStale:
+    def _db_entry(self, path):
+        st = os.stat(path)
+        return {"size": st.st_size, "mtime": st.st_mtime}
+
+    def test_new_file_not_in_db_is_returned(self, tmp_path):
+        p = tmp_path / "new.bin"
+        p.write_bytes(b"data")
+        result = _collect_stale([str(p)], {})
+        assert str(p) in result
+
+    def test_unchanged_file_is_cache_hit(self, tmp_path):
+        p = tmp_path / "cached.bin"
+        p.write_bytes(b"data")
+        db = {path_without_drive(str(p)): self._db_entry(str(p))}
+        result = _collect_stale([str(p)], db)
+        assert result == []
+
+    def test_size_change_makes_stale(self, tmp_path):
+        p = tmp_path / "file.bin"
+        p.write_bytes(b"short")
+        k = path_without_drive(str(p))
+        db = {k: {"size": 999, "mtime": os.stat(str(p)).st_mtime}}
+        result = _collect_stale([str(p)], db)
+        assert str(p) in result
+        assert k not in db  # stale entry removed
+
+    def test_mtime_over_tolerance_makes_stale(self, tmp_path):
+        p = tmp_path / "file.bin"
+        p.write_bytes(b"data")
+        actual_mtime = os.stat(str(p)).st_mtime
+        k = path_without_drive(str(p))
+        db = {k: {"size": p.stat().st_size, "mtime": actual_mtime + _TS_TOLERANCE + 1}}
+        result = _collect_stale([str(p)], db)
+        assert str(p) in result
+
+    def test_mtime_within_tolerance_is_hit(self, tmp_path):
+        p = tmp_path / "file.bin"
+        p.write_bytes(b"data")
+        actual_mtime = os.stat(str(p)).st_mtime
+        k = path_without_drive(str(p))
+        db = {k: {"size": p.stat().st_size, "mtime": actual_mtime + _TS_TOLERANCE / 2}}
+        result = _collect_stale([str(p)], db)
+        assert result == []
+
+    def test_mtime_at_boundary_is_stale(self, tmp_path):
+        # Check is `< _TS_TOLERANCE` (strict), so exactly at boundary → stale
+        p = tmp_path / "file.bin"
+        p.write_bytes(b"data")
+        actual_mtime = os.stat(str(p)).st_mtime
+        k = path_without_drive(str(p))
+        db = {k: {"size": p.stat().st_size, "mtime": actual_mtime + _TS_TOLERANCE}}
+        result = _collect_stale([str(p)], db)
+        assert str(p) in result
+
+    def test_oserror_on_stat_adds_to_compute_preserves_db_entry(self, tmp_path):
+        p = tmp_path / "file.bin"
+        p.write_bytes(b"data")
+        k = path_without_drive(str(p))
+        db = {k: {"size": p.stat().st_size, "mtime": os.stat(str(p)).st_mtime}}
+        with patch("idem_module.os.stat" if False else "idem.os.stat", side_effect=OSError("no access")):
+            result = _collect_stale([str(p)], db)
+        assert str(p) in result
+        assert k in db  # entry NOT deleted on OSError
+
+
+class TestGroupExactDuplicates:
+    def _entry(self, checksum, size):
+        return {"checksum": checksum, "size": size, "path": "unused",
+                "mtime": 0.0, "ctime": 0.0}
+
+    def test_empty_db_returns_empty(self):
+        assert group_exact_duplicates({}, {}) == []
+
+    def test_unique_checksums_no_group(self):
+        db = {
+            "\\a.jpg": self._entry("aaa", 100),
+            "\\b.jpg": self._entry("bbb", 200),
+        }
+        assert group_exact_duplicates(db, {}) == []
+
+    def test_two_files_same_checksum_form_one_group(self):
+        db = {
+            "\\a.jpg": self._entry("abc123", 100),
+            "\\b.jpg": self._entry("abc123", 200),
+        }
+        groups = group_exact_duplicates(db, {})
+        assert len(groups) == 1
+        assert len(groups[0]) == 2
+
+    def test_largest_first_within_group(self):
+        db = {
+            "\\small.jpg": self._entry("same", 100),
+            "\\large.jpg": self._entry("same", 500),
+        }
+        groups = group_exact_duplicates(db, {})
+        assert len(groups) == 1
+        assert groups[0][0][1] == 500   # largest first
+        assert groups[0][1][1] == 100
+
+    def test_multiple_groups_sorted_largest_group_first(self):
+        db = {
+            "\\a1.jpg": self._entry("hash_a", 100),
+            "\\a2.jpg": self._entry("hash_a", 100),
+            "\\a3.jpg": self._entry("hash_a", 100),
+            "\\b1.jpg": self._entry("hash_b", 200),
+            "\\b2.jpg": self._entry("hash_b", 200),
+        }
+        groups = group_exact_duplicates(db, {})
+        assert len(groups) == 2
+        assert len(groups[0]) == 3   # group of 3 first
+
+    def test_abs_path_map_fallback(self):
+        db = {
+            "\\key_a.jpg": self._entry("dup", 100),
+            "\\key_b.jpg": self._entry("dup", 100),
+        }
+        # abs_path_map only maps one key; the other falls back to the key itself
+        abs_path_map = {"\\key_a.jpg": "/resolved/key_a.jpg"}
+        groups = group_exact_duplicates(db, abs_path_map)
+        assert len(groups) == 1
+        paths = {p for p, _ in groups[0]}
+        assert "/resolved/key_a.jpg" in paths
+        assert "\\key_b.jpg" in paths
+
+
+class TestBuildExactIndex:
+    def test_new_files_hashed_and_counted(self, tmp_path):
+        p1 = tmp_path / "a.bin"
+        p2 = tmp_path / "b.bin"
+        p1.write_bytes(b"file a content")
+        p2.write_bytes(b"file b content")
+        db_path = str(tmp_path / "db.csv")
+        db, new_count, gone_count, errors = build_exact_index(
+            [str(p1), str(p2)], db_path
+        )
+        assert new_count == 2
+        assert gone_count == 0
+        assert errors == 0
+        assert len(db) == 2
+
+    def test_gone_files_removed(self, tmp_path):
+        p1 = tmp_path / "keep.bin"
+        p2 = tmp_path / "gone.bin"
+        p1.write_bytes(b"keep")
+        p2.write_bytes(b"gone")
+        db_path = str(tmp_path / "db.csv")
+        build_exact_index([str(p1), str(p2)], db_path)
+        # Second call without p2
+        db, new_count, gone_count, errors = build_exact_index([str(p1)], db_path)
+        assert gone_count == 1
+        assert len(db) == 1
+
+    def test_cache_hit_no_recount(self, tmp_path):
+        p = tmp_path / "file.bin"
+        p.write_bytes(b"stable content")
+        db_path = str(tmp_path / "db.csv")
+        build_exact_index([str(p)], db_path)
+        _, new_count, _, _ = build_exact_index([str(p)], db_path)
+        assert new_count == 0
+
+    def test_error_file_counted(self, tmp_path):
+        p_real = tmp_path / "real.bin"
+        p_real.write_bytes(b"real content")
+        p_missing = str(tmp_path / "nonexistent.bin")
+        db_path = str(tmp_path / "db.csv")
+        db, new_count, _, errors = build_exact_index(
+            [str(p_real), p_missing], db_path
+        )
+        assert errors == 1
+        assert path_without_drive(str(p_real)) in db
+
+    def test_return_tuple_structure(self, tmp_path):
+        p = tmp_path / "file.bin"
+        p.write_bytes(b"data")
+        db_path = str(tmp_path / "db.csv")
+        result = build_exact_index([str(p)], db_path)
+        assert isinstance(result, tuple)
+        assert len(result) == 4
+        db, new_count, gone_count, errors = result
+        assert isinstance(db, dict)
+        assert isinstance(new_count, int)
+        assert isinstance(gone_count, int)
+        assert isinstance(errors, int)
+
+
+# ── Priority 2 — Correctness gaps ─────────────────────────────────────────────
+
+
+class TestGroupDuplicatesDhash:
+    def test_dhash_filter_prevents_false_positive_grouping(self, tmp_path):
+        """Identical phash but maximum dhash distance should NOT be grouped at threshold=0."""
+        p1 = str(tmp_path / "a.jpg")
+        p2 = str(tmp_path / "b.jpg")
+        (tmp_path / "a.jpg").write_bytes(b"x")
+        (tmp_path / "b.jpg").write_bytes(b"x")
+        phash_int = 0                         # "0" * 16
+        dhash_a   = 0                         # all zero bits
+        dhash_b   = int("f" * 16, 16)         # all one bits, distance=64 from dhash_a
+        hashes = {p1: (phash_int, dhash_a, 100), p2: (phash_int, dhash_b, 100)}
+        assert group_duplicates(hashes, threshold=0) == []
+
+
+class TestCacheIOExtra:
+    def test_load_mixed_valid_and_corrupt_rows(self, tmp_path):
+        cache_path = str(tmp_path / "cache.csv")
+        with open(cache_path, "w", newline="", encoding="utf-8") as f:
+            writer = csv.DictWriter(f, fieldnames=CACHE_FIELDS)
+            writer.writeheader()
+            writer.writerow({"path": "\\valid.jpg", "size": "1000",
+                             "mtime": "1.0", "phash": "0" * 16, "dhash": ""})
+            writer.writerow({"path": "\\bad.jpg", "size": "not_an_int",
+                             "mtime": "1.0", "phash": "0" * 16, "dhash": ""})
+        result = load_cache(cache_path)
+        assert len(result) == 1
+        assert "\\valid.jpg" in result
+
+    def test_load_missing_dhash_column_treated_as_empty(self, tmp_path):
+        cache_path = str(tmp_path / "cache.csv")
+        fields_no_dhash = ["path", "size", "mtime", "phash"]
+        with open(cache_path, "w", newline="", encoding="utf-8") as f:
+            writer = csv.DictWriter(f, fieldnames=fields_no_dhash)
+            writer.writeheader()
+            writer.writerow({"path": "\\photo.jpg", "size": "500",
+                             "mtime": "1.0", "phash": "0" * 16})
+        result = load_cache(cache_path)
+        assert "\\photo.jpg" in result
+        assert result["\\photo.jpg"]["dhash"] == ""
+
+    def test_save_mkstemp_failure_logs_warning(self, tmp_path, capsys):
+        cache_path = str(tmp_path / "cache.csv")
+        with patch("tempfile.mkstemp", side_effect=OSError("no space")):
+            save_cache(cache_path, {})  # must not raise
+        captured = capsys.readouterr()
+        assert "Warning" in captured.err
+
+    def test_save_replace_failure_cleans_up_temp(self, tmp_path, capsys):
+        cache_path = str(tmp_path / "cache.csv")
+        with patch("os.replace", side_effect=OSError("replace failed")):
+            save_cache(cache_path, {})  # must not raise
+        captured = capsys.readouterr()
+        assert "Warning" in captured.err
+        # No .tmp files should remain
+        tmp_files = list(tmp_path.glob("*.tmp"))
+        assert tmp_files == []
+
+
+class TestBuildHashesExtra:
+    def test_mtime_within_tolerance_is_cache_hit(self, tmp_path):
+        p = write_image(tmp_path / "photo.jpg")
+        cache = {}
+        build_hashes([str(p)], cache)
+        # Shift mtime by less than tolerance → should still be a cache hit
+        key = path_without_drive(str(p))
+        cache[key]["mtime"] += _TS_TOLERANCE / 2
+        _, new_count, rehashed_count, _ = build_hashes([str(p)], cache)
+        assert new_count == 0
+        assert rehashed_count == 0
+
+    def test_mtime_just_over_tolerance_triggers_rehash(self, tmp_path):
+        p = write_image(tmp_path / "photo.jpg")
+        cache = {}
+        build_hashes([str(p)], cache)
+        key = path_without_drive(str(p))
+        cache[key]["mtime"] += _TS_TOLERANCE + 1
+        _, new_count, rehashed_count, _ = build_hashes([str(p)], cache)
+        assert rehashed_count == 1
+
+    def test_stat_failure_during_scan_counts_as_error(self, tmp_path):
+        p = write_image(tmp_path / "photo.jpg")
+        with patch("idem.os.stat", side_effect=OSError("permission denied")):
+            hashes, _, _, error_count = build_hashes([str(p)], {})
+        assert error_count == 1
+        assert hashes == {}
+
+    def test_mixed_errors_and_successes(self, tmp_path):
+        p1 = write_image(tmp_path / "ok1.jpg", color="red")
+        p2 = write_image(tmp_path / "ok2.jpg", color="blue")
+        p3 = tmp_path / "junk.jpg"
+        p3.write_bytes(b"not an image at all, just junk bytes 0123456789")
+        hashes, _, _, error_count = build_hashes([str(p1), str(p2), str(p3)], {})
+        assert len(hashes) == 2
+        assert error_count == 1
+
+
+# ── Priority 3 — Robustness ────────────────────────────────────────────────────
+
+
+class TestVCacheIOExtra:
+    def test_partially_invalid_vhash_hex_row_skipped(self, tmp_path):
+        """A vhash with one non-hex segment causes the whole row to be skipped."""
+        cache_path = str(tmp_path / "vcache.csv")
+        with open(cache_path, "w", newline="", encoding="utf-8") as f:
+            writer = csv.DictWriter(f, fieldnames=VCACHE_FIELDS)
+            writer.writeheader()
+            writer.writerow({
+                "path": "\\videos\\bad.mp4", "size": 100,
+                "mtime": 1.0, "duration": 60.0,
+                "vhash": "0000000000000000,INVALID,0000000000000000",
+            })
+        assert load_vcache(cache_path) == {}
+
+
+class TestGetVideoDurationExtra:
+    def test_ffprobe_malformed_output_falls_back_to_ffmpeg(self, tmp_path):
+        """If ffprobe returns non-float stdout, falls through to ffmpeg Duration parsing."""
+        dummy = tmp_path / "v.mp4"
+        dummy.write_bytes(b"x")
+
+        ffprobe_result = MagicMock()
+        ffprobe_result.returncode = 0
+        ffprobe_result.stdout = "not_a_float\n"
+        ffprobe_result.stderr = ""
+
+        ffmpeg_result = MagicMock()
+        ffmpeg_result.returncode = 1
+        ffmpeg_result.stdout = ""
+        ffmpeg_result.stderr = "... Duration: 00:01:30.00, start: ..."
+
+        call_count = {"n": 0}
+
+        def fake_run(cmd, *a, **kw):
+            call_count["n"] += 1
+            if cmd[0] == "ffprobe":
+                return ffprobe_result
+            return ffmpeg_result
+
+        with patch("shutil.which", return_value="/usr/bin/ffprobe"), \
+             patch("subprocess.run", side_effect=fake_run):
+            dur = _get_video_duration(str(dummy))
+
+        assert abs(dur - 90.0) < 0.01
+
+
+# ── Priority 5 — Flask endpoint security ──────────────────────────────────────
+
+
+flask = pytest.importorskip("flask")
+
+
+@pytest.fixture
+def review_app(tmp_path):
+    from idem import _build_review_app
+    img = write_image(tmp_path / "photo.jpg")
+    groups = [[(str(img), img.stat().st_size)]]
+    app, _ = _build_review_app(groups, str(tmp_path))
+    app.config["TESTING"] = True
+    return app, tmp_path
+
+
+class TestReviewUI:
+    def test_image_endpoint_serves_valid_file(self, review_app):
+        app, tmp_path = review_app
+        img_path = str(tmp_path / "photo.jpg")
+        with app.test_client() as client:
+            resp = client.get(f"/image?path={img_path}")
+        assert resp.status_code == 200
+
+    def test_image_endpoint_path_traversal_returns_403(self, review_app):
+        app, tmp_path = review_app
+        with app.test_client() as client:
+            resp = client.get("/image?path=../../../etc/passwd")
+        assert resp.status_code == 403
+
+    def test_image_endpoint_missing_file_returns_404(self, review_app):
+        app, tmp_path = review_app
+        missing = str(tmp_path / "deleted.jpg")
+        with app.test_client() as client:
+            resp = client.get(f"/image?path={missing}")
+        assert resp.status_code == 404
+
+    def test_thumbnail_endpoint_path_traversal_returns_403(self, review_app):
+        app, tmp_path = review_app
+        with app.test_client() as client:
+            resp = client.get("/thumbnail?path=../../../etc/passwd")
+        assert resp.status_code == 403
