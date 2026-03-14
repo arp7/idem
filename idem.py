@@ -41,6 +41,7 @@ import hashlib
 import json
 import os
 import re
+import shutil
 import sys
 import tempfile
 from pathlib import Path
@@ -69,7 +70,7 @@ except ImportError:
 
 CACHE_FILENAME    = "images_perceptual_hash_db.csv"
 CACHE_FIELDS      = ["path", "size", "mtime", "phash", "dhash"]
-DEFAULT_THRESHOLD = 0
+DEFAULT_THRESHOLD = 10
 _TS_TOLERANCE     = 2.0   # seconds; covers FAT32 / float round-trip noise
 
 IMAGE_EXTENSIONS = {
@@ -173,7 +174,8 @@ def save_cache(cache_path: str, cache: dict) -> None:
             writer = csv.DictWriter(f, fieldnames=CACHE_FIELDS)
             writer.writeheader()
             for path, data in sorted(cache.items()):
-                writer.writerow({"path": path_without_drive(path), **data})
+                # Keys are always drive-stripped (path_without_drive applied on insert).
+                writer.writerow({"path": path, **data})
         os.replace(tmp_path, cache_path)
     except Exception as e:
         print(f"Warning: could not save cache ({e}).", file=sys.stderr)
@@ -514,7 +516,8 @@ def build_hashes(all_files: list, cache: dict, cache_out=None) -> tuple:
 
     if writer:
         cache_out.flush()  # flush any remainder at the end
-    print()  # end progress line
+    if n > 0:
+        print()  # end progress line
     return hashes, new_count, rehashed_count, errors
 
 
@@ -569,16 +572,14 @@ def group_duplicates(hashes: dict, threshold: int) -> list:
 
 def ffmpeg_available() -> bool:
     """Return True if ffmpeg is on PATH."""
-    import shutil as _shutil
-    return _shutil.which("ffmpeg") is not None
+    return shutil.which("ffmpeg") is not None
 
 
 def _get_video_duration(path: str) -> float:
     """Return video duration in seconds via ffprobe, falling back to ffmpeg."""
-    import shutil as _shutil
     import subprocess
 
-    if _shutil.which("ffprobe"):
+    if shutil.which("ffprobe"):
         r = subprocess.run(
             ["ffprobe", "-v", "error", "-show_entries", "format=duration",
              "-of", "default=noprint_wrappers=1:nokey=1", path],
@@ -801,6 +802,30 @@ def group_video_duplicates(vhashes: dict, threshold: int) -> list:
 
 # ── Exact-match logic ──────────────────────────────────────────────────────────
 
+def _collect_stale(files: list, db: dict) -> list:
+    """Return paths from *files* needing checksum computation (new or stale).
+
+    Stale entries are removed from *db* in-place only when the file is confirmed
+    accessible and its metadata has changed.  Transient OSErrors are ignored so
+    the cached entry survives until the next successful stat.
+    """
+    to_compute = []
+    for path in files:
+        k = path_without_drive(path)
+        cached = db.get(k)
+        if cached:
+            try:
+                st = os.stat(path)
+                if (cached["size"] == st.st_size
+                        and abs(cached["mtime"] - st.st_mtime) < _TS_TOLERANCE):
+                    continue  # cache hit
+                del db[k]  # stale — metadata changed
+            except OSError:
+                pass
+        to_compute.append(path)
+    return to_compute
+
+
 def build_exact_index(all_files: list, db_path: str) -> tuple:
     """Load/update all_media_sha_hash_db.csv; compute checksums for new or stale files.
 
@@ -818,20 +843,7 @@ def build_exact_index(all_files: list, db_path: str) -> tuple:
         gone_count += 1
 
     # Identify new files and stale entries (metadata changed).
-    to_compute = []
-    for path in all_files:
-        k = path_without_drive(path)
-        cached = db.get(k)
-        if cached:
-            try:
-                st = os.stat(path)
-                if (cached["size"] == st.st_size
-                        and abs(cached["mtime"] - st.st_mtime) < _TS_TOLERANCE):
-                    continue  # cache hit
-            except OSError:
-                pass
-            del db[k]  # stale
-        to_compute.append(path)
+    to_compute = _collect_stale(all_files, db)
 
     new_count = errors = 0
     n = len(to_compute)
@@ -856,7 +868,8 @@ def build_exact_index(all_files: list, db_path: str) -> tuple:
         }
         new_count += 1
 
-    print()  # end progress line
+    if n > 0:
+        print()  # end progress line
     _save_db(db_path, db)
     return db, new_count, gone_count, errors
 
@@ -895,21 +908,7 @@ def _update_checksums_additive(files: list, db_path: str) -> tuple:
     are being indexed).  Returns (db, new_count, errors).
     """
     db = _load_db(db_path)
-
-    to_compute = []
-    for path in files:
-        k = path_without_drive(path)
-        cached = db.get(k)
-        if cached:
-            try:
-                st = os.stat(path)
-                if (cached["size"] == st.st_size
-                        and abs(cached["mtime"] - st.st_mtime) < _TS_TOLERANCE):
-                    continue  # fresh cache hit
-            except OSError:
-                pass
-            del db[k]  # stale
-        to_compute.append(path)
+    to_compute = _collect_stale(files, db)
 
     new_count = errors = 0
     n = len(to_compute)
@@ -976,18 +975,20 @@ def print_results(groups: list, directory: str,
     print("-" * 80)
 
     same_folder_groups = []  # exact-mode groups where all replicas share one folder
+    displayed = 0
 
-    for i, group in enumerate(groups, 1):
+    for group in groups:
         if exact:
             dirs = {str(Path(p).parent) for p, _ in group}
             if len(dirs) == 1:
                 same_folder_groups.append(group)
                 continue
-            print(f"\nGroup {i}  *  {len(group)} files")
+        displayed += 1
+        print(f"\nGroup {displayed}  *  {len(group)} files")
+        if exact:
             keep_path, final_path = _exact_group_keep(group, ignore, directory)
             _print_group_files(group, keep_path, final_path)
         else:
-            print(f"\nGroup {i}  *  {len(group)} files")
             for j, (path, size) in enumerate(group):
                 tag = "  <- largest" if j == 0 else ""
                 rel = os.path.relpath(path, directory)
@@ -1160,7 +1161,7 @@ _REVIEW_HTML = """<!DOCTYPE html>
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>kura — Review Duplicates</title>
+<title>idem — Review Duplicates</title>
 <style>
 * { box-sizing: border-box; margin: 0; padding: 0; }
 body { font-family: system-ui, sans-serif; background: #f0f0f0; color: #222; }
@@ -1275,7 +1276,7 @@ main { max-width: 1200px; margin: 0 auto; padding: 20px; }
 </head>
 <body>
 <header>
-  <h1>kura &mdash; Duplicate Review</h1>
+  <h1>idem &mdash; Duplicate Review</h1>
   <span id="stats">Loading&hellip;</span>
   <button id="confirm-btn" onclick="confirmSelections()">Confirm &amp; Move to Trash</button>
 </header>
@@ -1722,6 +1723,9 @@ init();
 </script>
 </body>
 </html>"""
+assert "/*PAGESIZE*/10/*PAGESIZE*/" in _REVIEW_HTML, (
+    "BUG: _REVIEW_HTML is missing the /*PAGESIZE*/10/*PAGESIZE*/ placeholder"
+)
 
 
 def _resolve_transform(r: dict, keep_set: set, dir_resolved: Path):
@@ -1772,7 +1776,7 @@ def _resolve_transform(r: dict, keep_set: set, dir_resolved: Path):
 
 
 def launch_review_ui(groups: list, directory: str, page_size: int = 10,
-                     ignore: list = None) -> None:
+                     ignore: list | None = None) -> None:
     """Start a local Flask server and open a browser-based duplicate review UI."""
     if not groups:
         print("\nNo duplicate groups found. Nothing to review.")
@@ -1789,7 +1793,6 @@ def launch_review_ui(groups: list, directory: str, page_size: int = 10,
     import threading
     import time
     import webbrowser
-    import shutil as _shutil
 
     logging.getLogger("werkzeug").setLevel(logging.ERROR)
 
@@ -1891,7 +1894,7 @@ def launch_review_ui(groups: list, directory: str, page_size: int = 10,
             try:
                 dst = _unique_dst(_trash_path(path, str(dir_resolved)))
                 dst.parent.mkdir(parents=True, exist_ok=True)
-                _shutil.move(path, str(dst))
+                shutil.move(path, str(dst))
                 moved += 1
             except Exception as e:
                 errors.append(f"{os.path.basename(path)}: {e}")
@@ -1921,7 +1924,22 @@ def launch_review_ui(groups: list, directory: str, page_size: int = 10,
         shutdown_event.set()
         return "", 204
 
-    port = 5757
+    import socket
+    import urllib.request
+
+    # Find a free port in range 5757–5766.
+    port = None
+    for _candidate in range(5757, 5767):
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as _s:
+            try:
+                _s.bind(("127.0.0.1", _candidate))
+                port = _candidate
+                break
+            except OSError:
+                continue
+    if port is None:
+        print("Error: no free port available in range 5757–5766.", file=sys.stderr)
+        return
 
     def _run():
         try:
@@ -1930,8 +1948,29 @@ def launch_review_ui(groups: list, directory: str, page_size: int = 10,
             print(f"Error: could not start server on port {port}: {e}", file=sys.stderr)
             shutdown_event.set()
 
+    server_ready = threading.Event()
+
+    def _poll_server():
+        for _ in range(20):
+            if shutdown_event.is_set():
+                return
+            try:
+                urllib.request.urlopen(
+                    f"http://127.0.0.1:{port}/groups", timeout=0.5
+                )
+                server_ready.set()
+                return
+            except Exception:
+                time.sleep(0.5)
+
     threading.Thread(target=_run, daemon=True).start()
-    time.sleep(0.5)
+    threading.Thread(target=_poll_server, daemon=True).start()
+    if not server_ready.wait(timeout=10) or shutdown_event.is_set():
+        if not shutdown_event.is_set():
+            print(f"Warning: server may not be ready; opening browser anyway.",
+                  file=sys.stderr)
+        else:
+            return
     webbrowser.open(f"http://127.0.0.1:{port}/")
     print(f"\nReview UI at http://127.0.0.1:{port}/  - confirm in browser, then click Done.")
     try:
@@ -1951,8 +1990,6 @@ def interactive_mode(groups: list, directory: str, ignore: tuple = ()) -> None:
     which directory to keep the file in by entering a letter (a, b, c …).
     All other replicas are moved to __duplicate_files_trash/.  Enter 's' to skip a group.
     """
-    import shutil as _shutil
-
     if not groups:
         print("\nNo duplicate groups found.")
         return
@@ -2098,9 +2135,16 @@ def interactive_mode(groups: list, directory: str, ignore: tuple = ()) -> None:
                 skipped_count += 1
                 continue
             try:
-                dst = _unique_dst(_trash_path(p, directory))
+                try:
+                    dst = _unique_dst(_trash_path(p, directory))
+                except ValueError:
+                    # File is outside directory (e.g. symlink target); fall back
+                    # to a flat path inside the trash folder.
+                    dst = _unique_dst(
+                        Path(directory) / "__duplicate_files_trash" / Path(p).name
+                    )
                 dst.parent.mkdir(parents=True, exist_ok=True)
-                _shutil.move(p, str(dst))
+                shutil.move(p, str(dst))
                 moved_count += 1
                 print(f"  trashed  {_safe_relpath(p, directory)}")
             except Exception as e:
@@ -2131,7 +2175,7 @@ def interactive_mode(groups: list, directory: str, ignore: tuple = ()) -> None:
 
 # ── Trash verification ─────────────────────────────────────────────────────────
 
-def verify_trash(directory: str, threshold: int) -> None:
+def verify_trash(directory: str, threshold: int, cache_dir: str | None = None) -> None:
     """Verify every media file in __duplicate_files_trash/ has a match in directory.
 
     Images are matched perceptually (phash+dhash within *threshold*).
@@ -2142,6 +2186,7 @@ def verify_trash(directory: str, threshold: int) -> None:
     if not os.path.isdir(trash_dir):
         print(f"__duplicate_files_trash/ not found in {directory}.")
         return
+    src_cache_dir = cache_dir if cache_dir else _ensure_db_dir(directory)
 
     # 1. Scan trash — split into images and videos
     print(f"Scanning trash: {trash_dir} ...")
@@ -2162,7 +2207,7 @@ def verify_trash(directory: str, threshold: int) -> None:
         src_img_files = scan_files(directory)  # excludes __duplicate_files_trash/ automatically
         print(f"  {len(src_img_files)} images in source")
 
-        cache_path = os.path.join(_ensure_db_dir(directory), CACHE_FILENAME)
+        cache_path = os.path.join(src_cache_dir, CACHE_FILENAME)
         cache = load_cache(cache_path)
         live_keys = {path_without_drive(p) for p in src_img_files}
         cache = {k: v for k, v in cache.items() if k in live_keys}
@@ -2221,7 +2266,7 @@ def verify_trash(directory: str, threshold: int) -> None:
 
         # Additive update: add video checksums to source db without removing
         # any image entries that may already be present.
-        src_db_path = os.path.join(_ensure_db_dir(directory), DB_FILENAME)
+        src_db_path = os.path.join(src_cache_dir, DB_FILENAME)
         print(f"\nIndexing source videos ...")
         src_db, src_new, src_errors = _update_checksums_additive(src_vid_files, src_db_path)
         src_hits = len(src_vid_files) - src_new
@@ -2259,7 +2304,7 @@ def verify_trash(directory: str, threshold: int) -> None:
             print(f"\nPerceptual check for {len(exact_unmatched_vids)} "
                   f"unmatched video(s) (threshold={threshold}) ...")
 
-            src_vcache_path = os.path.join(_ensure_db_dir(directory), VCACHE_FILENAME)
+            src_vcache_path = os.path.join(src_cache_dir, VCACHE_FILENAME)
             src_vcache = load_vcache(src_vcache_path)
             src_vhash_out = _open_vcache_for_append(src_vcache_path)
             try:
@@ -2310,7 +2355,7 @@ def verify_trash(directory: str, threshold: int) -> None:
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Find duplicate images (and videos with --exact).",
+        description="Find duplicate images and videos.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=__doc__.split("Usage:")[0].strip(),
     )
@@ -2320,7 +2365,7 @@ def main():
         help=(
             "Use SHA-256 checksums for exact duplicate detection. "
             "Covers all media files including videos. Reads and updates "
-            f"{DB_DIR}/{DB_FILENAME} in the scanned directory. Ignores --threshold and --cache."
+            f"{DB_DIR}/{DB_FILENAME} in the scanned directory. Ignores --threshold."
         ),
     )
     parser.add_argument(
@@ -2361,8 +2406,7 @@ def main():
         help=(
             "Launch a local browser UI to interactively review duplicates and move "
             "unwanted files to __duplicate_files_trash/ inside the scanned directory. "
-            "Requires Flask (pip install flask). "
-            "Note: files in __duplicate_files_trash/ will reappear as duplicates on the next scan."
+            "Requires Flask (pip install flask)."
         ),
     )
     output_group.add_argument(
@@ -2380,7 +2424,7 @@ def main():
     parser.add_argument(
         "--ignore", "-i", action="append", default=[], metavar="WORD",
         help=(
-            "Treat WORD as noise when scoring file and folder names in --review mode, "
+            "Treat WORD as noise when scoring file and folder names in --review and --interactive modes, "
             "so it never influences which name or folder is auto-selected. "
             "Case-insensitive. Repeatable: --ignore vacation --ignore beach."
         ),
@@ -2392,7 +2436,7 @@ def main():
     parser.add_argument(
         "--verify-trash", action="store_true",
         help=(
-            "Verify that every image in __duplicate_files_trash/ has a perceptual match in "
+            "Verify that every media file in __duplicate_files_trash/ has a perceptual match in "
             "<directory> within --threshold. Reports any files with no match, "
             "which may indicate idem wrongly trashed them. "
             "Exits with code 1 if unmatched files are found."
@@ -2404,6 +2448,10 @@ def main():
         delta = parse_size(args.delta)
     except (ValueError, TypeError):
         print(f"Error: invalid --delta value '{args.delta}'.", file=sys.stderr)
+        sys.exit(1)
+
+    if args.threshold < 0:
+        print("Error: --threshold must be >= 0.", file=sys.stderr)
         sys.exit(1)
 
     if not (1 <= args.page_size <= 500):
@@ -2428,7 +2476,7 @@ def main():
             sys.exit(1)
 
     if args.verify_trash:
-        verify_trash(directory, args.threshold)
+        verify_trash(directory, args.threshold, cache_dir)
         return
 
     if args.exact:

@@ -149,16 +149,18 @@ class TestCacheIO:
         assert isinstance(entry["mtime"], float)
 
     @pytest.mark.skipif(sys.platform != "win32", reason="Drive letters only on Windows")
-    def test_save_strips_drive_letter(self, tmp_path):
-        """Drive letters are removed from keys when writing the CSV."""
+    def test_save_writes_keys_as_is(self, tmp_path):
+        """save_cache writes keys verbatim; callers normalise via path_without_drive."""
         cache_path = str(tmp_path / "cache.csv")
-        cache = {"C:\\photos\\beach.jpg": {"size": 1000, "mtime": 1.0, "phash": "0" * 16}}
+        # Keys are always drive-stripped before insertion (see build_hashes /
+        # build_exact_index), so save_cache receives a driveless key here.
+        cache = {"\\photos\\beach.jpg": {"size": 1000, "mtime": 1.0, "phash": "0" * 16}}
         save_cache(cache_path, cache)
 
         with open(cache_path, newline="", encoding="utf-8") as f:
             rows = list(csv.DictReader(f))
         assert len(rows) == 1
-        assert not rows[0]["path"].startswith("C:")
+        assert rows[0]["path"] == "\\photos\\beach.jpg"
 
     @pytest.mark.skipif(sys.platform != "win32", reason="Drive letters only on Windows")
     def test_load_strips_drive_letter_from_csv(self, tmp_path):
