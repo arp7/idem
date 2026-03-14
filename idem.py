@@ -142,13 +142,13 @@ def load_cache(cache_path: str) -> dict:
                 try:
                     phash = row.get("phash", "")
                     dhash = row.get("dhash", "")
-                    if not _valid_hex(phash):
-                        continue  # skip rows with missing or corrupt phash
+                    if not _valid_hex(phash) or not _valid_hex(dhash):
+                        continue  # skip rows with missing or corrupt hashes
                     cache[path_without_drive(row["path"])] = {
                         "size":  int(row["size"]),
                         "mtime": float(row["mtime"]),
                         "phash": phash,
-                        "dhash": dhash if _valid_hex(dhash) else "",
+                        "dhash": dhash,
                     }
                 except (ValueError, KeyError):
                     pass  # skip individual corrupt rows; rest of cache is intact
@@ -328,9 +328,14 @@ def _file_checksum(path: str) -> str:
     p = Path(path)
     size = p.stat().st_size
     h = hashlib.sha256()
+    # Mixing the file size into the digest first ensures two files whose sampled
+    # windows happen to contain identical bytes but differ in total length will
+    # produce different checksums.
     h.update(size.to_bytes(8, "little"))
     with open(path, "rb") as f:
         if size <= _FULL_HASH_THRESHOLD:
+            # Use a reusable buffer + readinto to avoid allocating a new bytes
+            # object on every read; cuts GC pressure on large files.
             buf = bytearray(1 << 20)
             view = memoryview(buf)
             while True:
@@ -433,7 +438,7 @@ def scan_files(directory: str, extensions=IMAGE_EXTENSIONS) -> list:
     result = []
     _skip = {"__duplicate_files_trash", DB_DIR}
     for root, dirs, files in os.walk(directory):
-        dirs[:] = [d for d in dirs if d not in _skip]
+        dirs[:] = [d for d in dirs if d not in _skip]  # in-place edit prunes os.walk's descent
         for fname in files:
             if Path(fname).suffix.lower() in extensions:
                 result.append(os.path.join(root, fname))
@@ -486,8 +491,8 @@ def build_hashes(all_files: list, cache: dict, cache_out=None) -> tuple:
 
         is_new = not cached
 
-        if metadata_ok and cached.get("dhash"):
-            # Full cache hit: reuse both hashes
+        if metadata_ok:
+            # Cache hit — file unchanged (size and mtime within tolerance).
             ph = int(cached["phash"], 16)
             dh = int(cached["dhash"], 16)
         else:
@@ -510,7 +515,7 @@ def build_hashes(all_files: list, cache: dict, cache_out=None) -> tuple:
             else:
                 rehashed_count += 1
             if writer and (new_count + rehashed_count) % 200 == 0:
-                cache_out.flush()
+                cache_out.flush()  # periodic flush: limits lost work to ~200 hashes on interrupt
 
         hashes[path] = (ph, dh, size)
 
@@ -532,6 +537,8 @@ def group_duplicates(hashes: dict, threshold: int) -> list:
         return []
 
     def hamming(a, b):
+        # Items are (path, ph_int) tuples; XOR the integer pHashes and count
+        # the differing bits to get the Hamming distance between the two images.
         return (a[1] ^ b[1]).bit_count()
 
     items = [(path, ph) for path, (ph, _, _sz) in hashes.items()]
@@ -549,8 +556,13 @@ def group_duplicates(hashes: dict, threshold: int) -> list:
         matches = tree.find((path, ph), threshold)  # includes self
         if len(matches) < 2:
             continue
-        # Secondary filter: dhash within threshold; also exclude already-grouped
-        # files so no image can appear in more than one group.
+        # Secondary dhash filter: pHash captures frequency-domain (DCT) structure;
+        # dHash captures pixel-gradient direction changes.  Requiring both hashes
+        # to be within threshold significantly reduces false positives, since a
+        # pair of unrelated images is unlikely to fool both independently.
+        # Candidates already assigned to an earlier group are excluded so that each
+        # image appears in exactly one group (the first pivot whose BK-tree search
+        # returned it).
         group_paths = [m[1][0] for m in matches
                        if m[1][0] not in seen
                        and (hashes[m[1][0]][1] ^ dh).bit_count() <= threshold]
@@ -624,7 +636,10 @@ def compute_video_hashes(path: str, n: int = N_VIDEO_FRAMES) -> tuple:
     FRAME_W, FRAME_H = 64, 64
     timestamps = [duration * (2 * i + 1) / (2 * n) for i in range(n)]
 
-    # Build: -ss t0 -i path -ss t1 -i path ... (fast keyframe seek per input)
+    # Placing -ss *before* -i tells ffmpeg to seek at the input level: it jumps
+    # to the nearest preceding keyframe (fast).  Putting -ss *after* -i would
+    # force ffmpeg to decode every frame from the file start up to the target
+    # timestamp, which is prohibitively slow for large or high-bitrate videos.
     args = ["ffmpeg", "-nostdin"]
     for t in timestamps:
         args += ["-ss", f"{t:.6f}", "-i", path]
@@ -649,7 +664,7 @@ def compute_video_hashes(path: str, n: int = N_VIDEO_FRAMES) -> tuple:
             f"ffmpeg failed for {os.path.basename(path)}"
         )
 
-    frame_size = FRAME_W * FRAME_H * 3  # 12 288 bytes per frame
+    frame_size = FRAME_W * FRAME_H * 3  # bytes per raw RGB frame: 64×64×3 = 12 288
     raw = result.stdout
     n_got = len(raw) // frame_size
     if n_got == 0:
@@ -718,6 +733,9 @@ def build_video_hashes(files: list, cache: dict, cache_out=None) -> tuple:
                     "path": cache_key, "size": size, "mtime": mtime,
                     "duration": dur, "vhash": ",".join(hex_frames),
                 })
+                # Flush after every video: each hash takes several seconds, so a
+                # per-entry flush (rather than the 200-entry batch used for images)
+                # keeps data-loss on interrupt to at most one video's worth of work.
                 cache_out.flush()
             if is_new:
                 new_count += 1
@@ -754,7 +772,9 @@ def group_video_duplicates(vhashes: dict, threshold: int) -> list:
     # Sort by duration for the early-break inner loop.
     paths = sorted(vhashes.keys(), key=lambda p: vhashes[p][0])
 
-    # Union-Find (path compression).
+    # Union-Find with path compression: groups transitively similar videos so that
+    # if A~B and B~C they end up in the same component even when A and C are never
+    # directly compared.  A simple "add to list" approach would miss such chains.
     parent = {p: p for p in paths}
 
     def find(x):
@@ -937,7 +957,14 @@ def _update_checksums_additive(files: list, db_path: str) -> tuple:
 # ── Output ─────────────────────────────────────────────────────────────────────
 
 def _exact_group_keep(group: list, ignore: tuple, directory: str) -> tuple:
-    """Return (keep_path, final_path) for an exact-mode duplicate group."""
+    """Return (keep_path, final_path) for an exact-mode duplicate group.
+
+    keep_path  — the replica with the best-scored folder (the file left in place).
+    final_path — keep_path's directory combined with the best filename from any
+                 replica.  When a file in a well-named folder has a generic name,
+                 it can adopt a more descriptive name from another replica without
+                 moving to a different directory.
+    """
     files = [{"path": p, "name": os.path.basename(p), "dir": str(Path(p).parent)}
              for p, _ in group]
     keep_path = _pick_keeper(files, ignore, directory)
@@ -1723,6 +1750,9 @@ init();
 </script>
 </body>
 </html>"""
+# The sentinel uses JS block-comment syntax so the literal '10' is valid
+# JavaScript and the string can be located unambiguously for substitution at
+# runtime (launch_review_ui replaces it with the actual --page-size value).
 assert "/*PAGESIZE*/10/*PAGESIZE*/" in _REVIEW_HTML, (
     "BUG: _REVIEW_HTML is missing the /*PAGESIZE*/10/*PAGESIZE*/ placeholder"
 )
@@ -2042,7 +2072,9 @@ def interactive_mode(groups: list, directory: str, ignore: tuple = ()) -> None:
             continue
 
         if same_folder:
-            # Show what will be auto-kept so the user can confirm or skip.
+            # All replicas are in the same directory, so there is no folder to
+            # choose between.  Show the auto-selected keeper (scored by filename)
+            # and let the user confirm ('k') or skip ('s').
             preview_keep_path = _pick_keeper(files_meta, ignore, directory)
             link = Path(files_meta[0]["path"]).as_uri()
             print(f"{best_name}  {link}")
@@ -2298,8 +2330,11 @@ def verify_trash(directory: str, threshold: int, cache_dir: str | None = None) -
                 exact_unmatched_vids.append(abs_path_map.get(k, k))
         print()
 
-        # Perceptual fallback: for videos with no exact match, try frame-level
-        # comparison in case the kept copy was re-encoded at a different bitrate.
+        # Perceptual fallback: if a video was kept and later re-encoded (e.g. at a
+        # different resolution or bitrate), its byte content changes so the exact
+        # checksum no longer matches the trashed original.  Frame-level pHash
+        # comparison catches these cases — the same visual content hashes similarly
+        # even across re-encodes that change every byte in the file.
         if exact_unmatched_vids and ffmpeg_available():
             print(f"\nPerceptual check for {len(exact_unmatched_vids)} "
                   f"unmatched video(s) (threshold={threshold}) ...")
