@@ -84,20 +84,24 @@ def fake_entry(phash_hex: str, size: int = 100) -> tuple:
 class TestPathWithoutDrive:
     @pytest.mark.skipif(sys.platform != "win32", reason="Windows-specific")
     def test_strips_drive_letter(self):
+        """The 'C:' prefix is removed, leaving the rest of the path intact."""
         assert path_without_drive("C:\\Users\\foo\\bar.jpg") == "\\Users\\foo\\bar.jpg"
 
     @pytest.mark.skipif(sys.platform != "win32", reason="Windows-specific")
     def test_strips_various_drive_letters(self):
+        """Drive-letter stripping works for any letter (D:, Z:, etc.), not just C:."""
         assert path_without_drive("D:\\photos\\beach.jpg") == "\\photos\\beach.jpg"
         assert path_without_drive("Z:\\archive\\img.png") == "\\archive\\img.png"
 
     @pytest.mark.skipif(sys.platform != "win32", reason="Windows-specific")
     def test_already_driveless_unchanged(self):
+        """A path that already has no drive letter is returned unchanged."""
         p = "\\Users\\foo\\bar.jpg"
         assert path_without_drive(p) == p
 
     @pytest.mark.skipif(sys.platform == "win32", reason="Non-Windows specific")
     def test_unix_path_unchanged(self):
+        """Unix-style paths have no drive letter and are returned as-is."""
         p = "/Users/foo/bar.jpg"
         assert path_without_drive(p) == p
 
@@ -116,15 +120,19 @@ class TestPathWithoutDrive:
 
 class TestFmtSize:
     def test_bytes(self):
+        """Values below 1 KB are formatted with a 'B' suffix."""
         assert "B" in fmt_size(512)
 
     def test_kilobytes(self):
+        """Values in the KB range are formatted with a 'KB' suffix."""
         assert "KB" in fmt_size(2 * 1024)
 
     def test_megabytes(self):
+        """Values in the MB range are formatted with a 'MB' suffix."""
         assert "MB" in fmt_size(5 * 1024 * 1024)
 
     def test_gigabytes(self):
+        """Values in the GB range are formatted with a 'GB' suffix."""
         assert "GB" in fmt_size(3 * 1024 ** 3)
 
 
@@ -132,9 +140,11 @@ class TestFmtSize:
 
 class TestCacheIO:
     def test_missing_file_returns_empty(self, tmp_path):
+        """A non-existent cache file returns an empty dict rather than raising."""
         assert load_cache(str(tmp_path / "nonexistent.csv")) == {}
 
     def test_round_trip_preserves_data(self, tmp_path):
+        """Data saved with save_cache and reloaded with load_cache is identical."""
         cache_path = str(tmp_path / "cache.csv")
         original = {
             "\\photos\\beach.jpg": {"size": 1000, "mtime": 1708531200.0, "phash": "f8c8e4e2c4e4e8f0", "dhash": ""},
@@ -186,6 +196,7 @@ class TestCacheIO:
         assert "beach.jpg" in key
 
     def test_corrupt_file_returns_empty(self, tmp_path, capsys):
+        """A file with invalid CSV content returns an empty dict and does not raise."""
         cache_path = str(tmp_path / "cache.csv")
         Path(cache_path).write_text("not_a_field\ngarbage_row", encoding="utf-8")
         # Should not raise; returns empty dict and prints a warning
@@ -197,32 +208,38 @@ class TestCacheIO:
 
 class TestScanFiles:
     def test_finds_common_image_extensions(self, tmp_path):
+        """All common raster image formats (.jpg, .png, .gif, etc.) are discovered."""
         for ext in [".jpg", ".jpeg", ".png", ".gif", ".bmp", ".tiff", ".tif", ".webp"]:
             (tmp_path / f"photo{ext}").write_bytes(b"x")
         found = {Path(f).suffix.lower() for f in scan_files(str(tmp_path))}
         assert found == {".jpg", ".jpeg", ".png", ".gif", ".bmp", ".tiff", ".tif", ".webp"}
 
     def test_finds_heic_heif(self, tmp_path):
+        """HEIC and HEIF (Apple mobile) formats are also discovered."""
         (tmp_path / "photo.heic").write_bytes(b"x")
         (tmp_path / "photo.heif").write_bytes(b"x")
         assert len(scan_files(str(tmp_path))) == 2
 
     def test_ignores_raw_extensions(self, tmp_path):
+        """Raw camera formats (.cr2, .nef, etc.) are excluded from scan results."""
         for ext in [".cr2", ".nef", ".arw", ".dng", ".orf", ".rw2"]:
             (tmp_path / f"raw{ext}").write_bytes(b"x")
         assert scan_files(str(tmp_path)) == []
 
     def test_ignores_video_extensions(self, tmp_path):
+        """Video files (.mp4, .mov, etc.) are excluded from image scan results."""
         for ext in [".mp4", ".mov", ".avi", ".mkv", ".m4v"]:
             (tmp_path / f"video{ext}").write_bytes(b"x")
         assert scan_files(str(tmp_path)) == []
 
     def test_ignores_non_media_files(self, tmp_path):
+        """Non-media files (.txt, .csv) are excluded from scan results."""
         (tmp_path / "readme.txt").write_bytes(b"x")
         (tmp_path / "data.csv").write_bytes(b"x")
         assert scan_files(str(tmp_path)) == []
 
     def test_recursive_discovery(self, tmp_path):
+        """Files in nested subdirectories are found alongside top-level files."""
         sub = tmp_path / "a" / "b"
         sub.mkdir(parents=True)
         (tmp_path / "top.jpg").write_bytes(b"x")
@@ -230,17 +247,20 @@ class TestScanFiles:
         assert len(scan_files(str(tmp_path))) == 2
 
     def test_case_insensitive_extension(self, tmp_path):
+        """Extension matching is case-insensitive (.JPG is found just like .jpg)."""
         (tmp_path / "photo.JPG").write_bytes(b"x")
         (tmp_path / "photo.PNG").write_bytes(b"x")
         assert len(scan_files(str(tmp_path))) == 2
 
     def test_returns_sorted(self, tmp_path):
+        """The returned file list is in alphabetical order."""
         for name in ["c.jpg", "a.jpg", "b.jpg"]:
             (tmp_path / name).write_bytes(b"x")
         found = scan_files(str(tmp_path))
         assert found == sorted(found)
 
     def test_returns_absolute_paths(self, tmp_path):
+        """Every returned path is an absolute filesystem path."""
         (tmp_path / "photo.jpg").write_bytes(b"x")
         found = scan_files(str(tmp_path))
         assert all(os.path.isabs(p) for p in found)
@@ -250,6 +270,7 @@ class TestScanFiles:
 
 class TestBuildHashes:
     def test_computes_hash_for_new_file(self, tmp_path):
+        """A file not in the cache is hashed and counted as new."""
         p = write_image(tmp_path / "photo.jpg")
         cache = {}
         hashes, new_c, rehashed_c, errors = build_hashes([str(p)], cache)
@@ -258,6 +279,7 @@ class TestBuildHashes:
         assert errors == 0
 
     def test_cache_key_is_driveless(self, tmp_path):
+        """Cache keys are stored without drive letters for cross-platform consistency."""
         p = write_image(tmp_path / "photo.jpg")
         cache = {}
         build_hashes([str(p)], cache)
@@ -265,6 +287,7 @@ class TestBuildHashes:
             assert not (len(key) >= 2 and key[1] == ":"), f"Drive letter found in key: {key!r}"
 
     def test_cache_hit_skips_recompute(self, tmp_path):
+        """A file with unchanged size/mtime is served from cache with no recompute."""
         p = write_image(tmp_path / "photo.jpg")
         cache = {}
         hashes1, updated1, _, _ = build_hashes([str(p)], cache)
@@ -275,6 +298,7 @@ class TestBuildHashes:
         assert hashes1[str(p)] == hashes2[str(p)]
 
     def test_stale_size_triggers_recompute(self, tmp_path):
+        """A file that has grown in size is recomputed and counted as re-hashed."""
         p = write_image(tmp_path / "photo.jpg", size=(32, 32))
         cache = {}
         build_hashes([str(p)], cache)
@@ -285,6 +309,7 @@ class TestBuildHashes:
         assert updated == 1
 
     def test_stale_mtime_triggers_recompute(self, tmp_path):
+        """A file whose cached mtime differs beyond tolerance is recomputed."""
         p = write_image(tmp_path / "photo.jpg")
         cache = {}
         build_hashes([str(p)], cache)
@@ -297,6 +322,7 @@ class TestBuildHashes:
         assert updated == 1
 
     def test_non_image_content_counted_as_error(self, tmp_path):
+        """A file that cannot be opened as an image is counted as an error, not re-hashed."""
         p = tmp_path / "corrupt.jpg"
         p.write_bytes(b"this is not an image")
         cache = {}
@@ -305,6 +331,7 @@ class TestBuildHashes:
         assert updated == 0
 
     def test_multiple_files(self, tmp_path):
+        """Multiple files are all hashed in a single call, each counted independently."""
         files = [write_image(tmp_path / f"photo{i}.jpg", color=("red", "green", "blue")[i])
                  for i in range(3)]
         cache = {}
@@ -314,6 +341,7 @@ class TestBuildHashes:
         assert errors == 0
 
     def test_cache_populated_after_run(self, tmp_path):
+        """After hashing, the cache contains size, mtime, and phash for each file."""
         p = write_image(tmp_path / "photo.jpg")
         cache = {}
         build_hashes([str(p)], cache)
@@ -339,13 +367,16 @@ class TestGroupDuplicates:
         return paths
 
     def test_empty_input(self):
+        """An empty hash dict returns no duplicate groups."""
         assert group_duplicates({}, threshold=10) == []
 
     def test_single_file_not_grouped(self, tmp_path):
+        """A single file cannot form a duplicate group."""
         (p,) = self._files(tmp_path, "a.jpg")
         assert group_duplicates({p: fake_entry("0" * 16)}, threshold=10) == []
 
     def test_identical_hashes_grouped(self, tmp_path):
+        """Two files with the same hash are placed in one duplicate group."""
         p1, p2 = self._files(tmp_path, "a.jpg", "b.jpg")
         h = fake_entry("0" * 16)
         groups = group_duplicates({p1: h, p2: h}, threshold=0)
@@ -353,6 +384,7 @@ class TestGroupDuplicates:
         assert {p for p, _ in groups[0]} == {p1, p2}
 
     def test_distant_hashes_not_grouped(self, tmp_path):
+        """Files with maximum Hamming distance (all bits differ) are not grouped."""
         p1, p2 = self._files(tmp_path, "a.jpg", "b.jpg")
         # Max Hamming distance = 64
         groups = group_duplicates(
@@ -362,6 +394,7 @@ class TestGroupDuplicates:
         assert groups == []
 
     def test_near_duplicate_within_threshold(self, tmp_path):
+        """Files within the Hamming distance threshold are grouped as near-duplicates."""
         p1, p2 = self._files(tmp_path, "a.jpg", "b.jpg")
         # "000000000000000f" vs "0000000000000000": 4 bits differ → distance = 4
         groups = group_duplicates(
@@ -371,6 +404,7 @@ class TestGroupDuplicates:
         assert len(groups) == 1
 
     def test_near_duplicate_outside_threshold_not_grouped(self, tmp_path):
+        """Files whose Hamming distance exceeds the threshold are not grouped."""
         p1, p2 = self._files(tmp_path, "a.jpg", "b.jpg")
         # "000000000000000f" vs "0000000000000000": distance = 4
         groups = group_duplicates(
@@ -390,6 +424,7 @@ class TestGroupDuplicates:
         assert group_duplicates(hashes, threshold=3) == []  # 4 >  3: not grouped
 
     def test_within_group_sorted_largest_first(self, tmp_path):
+        """Within a duplicate group, the largest file (by byte size) appears first."""
         large, small = self._files(tmp_path, "large.jpg", "small.jpg")
         h_large = fake_entry("0" * 16, size=1000)
         h_small = fake_entry("0" * 16, size=100)
@@ -400,6 +435,7 @@ class TestGroupDuplicates:
         assert groups[0][1][1] == 100
 
     def test_multiple_groups_detected(self, tmp_path):
+        """Two independent clusters of similar images each produce a separate group."""
         p1, p2 = self._files(tmp_path, "a1.jpg", "a2.jpg")
         p3, p4 = self._files(tmp_path, "b1.jpg", "b2.jpg")
         ha = fake_entry("0" * 16)
@@ -408,6 +444,7 @@ class TestGroupDuplicates:
         assert len(groups) == 2
 
     def test_groups_sorted_most_files_first(self, tmp_path):
+        """Groups with more files appear before groups with fewer files."""
         trio  = self._files(tmp_path, "a1.jpg", "a2.jpg", "a3.jpg")
         pair  = self._files(tmp_path, "b1.jpg", "b2.jpg")
         ha = fake_entry("0" * 16)
@@ -556,6 +593,7 @@ class TestIncrementalCache:
     """Verify that hashes are flushed to disk as each file is processed."""
 
     def test_open_cache_for_append_creates_file_with_header(self, tmp_path):
+        """Opening a new cache file for append creates it and writes the CSV header row."""
         cache_path = str(tmp_path / "cache.csv")
         f = open_cache_for_append(cache_path)
         f.close()
@@ -728,53 +766,68 @@ class TestNameScoreCameraNames:
     """Camera/app-generated filenames should score 0 (no meaningful English words)."""
 
     def test_google_pixel(self):
+        """Google Pixel PXL_ prefix is a noise token; the name scores 0."""
         assert _name_score("PXL_20231015_123456789.jpg") == 0
 
     def test_generic_img(self):
+        """Generic 'IMG_' prefix is a noise token; the name scores 0."""
         assert _name_score("IMG_001.jpg") == 0
 
     def test_sony_dsc(self):
+        """Sony DSC_ prefix is a noise token; the name scores 0."""
         assert _name_score("DSC_0001.jpg") == 0
 
     def test_fuji_dscf(self):
+        """Fuji DSCF prefix is a noise token; the name scores 0."""
         assert _name_score("DSCF0042.jpg") == 0
 
     def test_nikon_dscn(self):
+        """Nikon DSCN prefix is a noise token; the name scores 0."""
         assert _name_score("DSCN0099.JPG") == 0
 
     def test_whatsapp(self):
+        """WhatsApp WA-prefixed names are noise tokens; the name scores 0."""
         assert _name_score("WA0001234567-1.jpg") == 0
 
     def test_dcim_prefix(self):
+        """DCIM_ prefix is a noise token; the name scores 0."""
         assert _name_score("DCIM_001.jpg") == 0
 
     def test_pure_digits(self):
+        """A filename that is purely numeric (e.g. a date) scores 0."""
         assert _name_score("20231015.jpg") == 0
 
     def test_date_with_time(self):
+        """A date+time-only filename (e.g. 20231015_153022) scores 0."""
         assert _name_score("20231015_153022.jpg") == 0
 
     def test_dcf_token(self):
+        """DCF_ token is recognised as noise; the name scores 0."""
         assert _name_score("DCF_0001.jpg") == 0
 
     def test_whatsapp_token(self):
+        """'WhatsApp' is a noise token; only digits remain after splitting, scoring 0."""
         # 'WhatsApp' is a noise token; only digits remain after splitting
         assert _name_score("WhatsApp_2023-10-15.jpg") == 0
 
     def test_images_token(self):
+        """'Images' is a noise token; the name scores 0."""
         # 'Images' is a noise token
         assert _name_score("images_001.jpg") == 0
 
     def test_whatsapp_and_images_combined(self):
+        """Both 'WhatsApp' and 'Images' tokens are noise; nothing meaningful remains."""
         # Both tokens are noise; nothing meaningful remains
         assert _name_score("WhatsApp_Images_2023-10-15.jpg") == 0
 
     def test_whatsapp_case_insensitive(self):
+        """'WhatsApp' noise detection is case-insensitive (whatsapp/WHATSAPP both score 0)."""
         assert _name_score("whatsapp_2023.jpg") == 0
         assert _name_score("WHATSAPP_2023.jpg") == 0
         assert _name_score("WhatsApp_2023.jpg") == 0
 
     def test_images_case_insensitive(self):
+        """'Images' noise detection is case-insensitive (images/IMAGES/Images all score 0)."""
         assert _name_score("images_001.jpg") == 0
         assert _name_score("IMAGES_001.jpg") == 0
         assert _name_score("Images_001.jpg") == 0
@@ -784,37 +837,46 @@ class TestNameScoreMeaningfulNames:
     """Filenames with real English words should score > 0."""
 
     def test_two_words_underscore(self):
+        """Two meaningful words separated by underscore score their combined letter count."""
         # 'beach'(5) + 'vacation'(8) = 13
         assert _name_score("beach_vacation.jpg") == 13
 
     def test_two_words_with_year(self):
+        """A year suffix is stripped; only the English words contribute to the score."""
         # year is stripped; 'birthday'(8) + 'party'(5) = 13
         assert _name_score("birthday_party_2023.jpg") == 13
 
     def test_hyphen_separated(self):
+        """Words separated by hyphens are each scored individually."""
         # 'new'(3) + 'year'(4) + 'eve'(3) = 10
         assert _name_score("new-year-eve.jpg") == 10
 
     def test_no_separator(self):
+        """A single token with no separator is scored by its total character length."""
         # single CamelCase token, no noise match: 'BeachSunset'(11)
         assert _name_score("BeachSunset.jpg") == 11
 
     def test_date_prefix_meaningful_suffix(self):
+        """A date prefix is stripped; only the meaningful suffix contributes to the score."""
         # digits/underscore split away; only 'birthday'(8) remains
         assert _name_score("20231015_birthday.jpg") == 8
 
     def test_long_descriptive_name(self):
+        """A multi-word descriptive filename accumulates scores for all words."""
         # 'beautiful'(9)+'sunset'(6)+'at'(2)+'beach'(5) = 22
         assert _name_score("beautiful_sunset_at_beach.jpg") == 22
 
     def test_space_separated(self):
+        """Spaces serve as word separators in the same way underscores do."""
         # spaces are separators; 'family'(6)+'reunion'(7) = 13
         assert _name_score("family reunion.jpg") == 13
 
     def test_single_meaningful_word(self):
+        """A single meaningful word scores its character length."""
         assert _name_score("sunset.jpg") == 6
 
     def test_uppercase_extension_ignored(self):
+        """The file extension is stripped regardless of case before scoring."""
         # extension is stripped; 'beach'(5)+'vacation'(8) = 13
         assert _name_score("beach_vacation.JPEG") == 13
 
@@ -830,16 +892,20 @@ class TestNameScoreComparisons:
         ("20231015_153022.jpg",        "sunset.jpg"),
     ])
     def test_meaningful_beats_camera(self, camera, meaningful):
+        """Any descriptive filename scores higher than any camera-generated name."""
         assert _name_score(meaningful) > _name_score(camera)
 
     def test_more_words_beats_fewer(self):
+        """A more descriptive (longer) name always outscores a shorter one."""
         assert _name_score("beautiful_sunset_at_beach.jpg") > _name_score("sunset.jpg")
 
     def test_camera_tie(self):
+        """Two camera-style names both score 0 and are therefore tied."""
         # Two camera-style names both score 0
         assert _name_score("PXL_001.jpg") == _name_score("IMG_002.jpg") == 0
 
     def test_noise_token_case_insensitive(self):
+        """Noise tokens are matched case-insensitively (lowercase 'pxl' treated same as 'PXL')."""
         # Lowercase 'pxl' should be treated as noise just like 'PXL'
         assert _name_score("pxl_20231015_001.jpg") == 0
 
@@ -850,18 +916,23 @@ class TestFolderScoreDateFolders:
     """Folders that are purely dates or numbers should score 0."""
 
     def test_iso_date(self):
+        """ISO-format date folders (YYYY-MM-DD) score 0."""
         assert _folder_score("/Photos/2023-12-25") == 0
 
     def test_year_only(self):
+        """Year-only folder names score 0."""
         assert _folder_score("/Photos/2023") == 0
 
     def test_year_month(self):
+        """Year-month folder names (YYYY-MM) score 0."""
         assert _folder_score("/Photos/2023-12") == 0
 
     def test_underscore_date(self):
+        """Underscore-separated date folders (YYYY_MM_DD) score 0."""
         assert _folder_score("/Photos/2023_12_25") == 0
 
     def test_pure_number(self):
+        """Purely numeric folder names score 0."""
         assert _folder_score("/camera/1234") == 0
 
 
@@ -869,30 +940,37 @@ class TestFolderScoreMeaningfulFolders:
     """Folders with English words should score > 0."""
 
     def test_two_words(self):
+        """A two-word folder name scores the total character count of its words."""
         # 'BeachVacation' = 13
         assert _folder_score("/Photos/Beach Vacation") == 13
 
     def test_word_with_year(self):
+        """A year suffix is stripped; only the English word contributes to the folder score."""
         # digits stripped; 'Christmas'(9) remains
         assert _folder_score("/Photos/Christmas 2023") == 9
 
     def test_underscore_separated(self):
+        """Underscores act as word separators in folder names."""
         # underscores stripped; 'familyreunion'(13)
         assert _folder_score("/2023/family_reunion") == 13
 
     def test_only_last_component_scored(self):
+        """Only the last path component (immediate parent folder) is scored."""
         # Deep path vs shallow path with same last component must score equally
         assert _folder_score("/very/long/path/Christmas Party") == _folder_score("/Christmas Party")
 
     def test_camera_roll(self):
+        """'Camera Roll' is a recognisable folder name, scoring its letter count."""
         # 'CameraRoll' = 10
         assert _folder_score("/Phone/Camera Roll") == 10
 
     def test_letters_only_folder(self):
+        """An all-letter folder name (not a noise token) scores its character count."""
         # 'DCIM' has 4 alpha chars; not stripped (folder score doesn't filter noise tokens)
         assert _folder_score("/DCIM") == 4
 
     def test_mixed_alpha_digits(self):
+        """Digits within a folder name are stripped before scoring the remaining letters."""
         # '100MEDIA': strip digits → 'MEDIA'(5)
         assert _folder_score("/camera/100MEDIA") == 5
 
@@ -907,6 +985,7 @@ class TestFolderScoreComparisons:
         ("/20231015",    "/Birthday Party"),
     ])
     def test_named_beats_date(self, date_folder, named_folder):
+        """Descriptive folder names always score higher than date/numeric ones."""
         assert _folder_score(named_folder) > _folder_score(date_folder)
 
 
@@ -922,6 +1001,7 @@ class TestSmartDefaultsKeep:
     """Index-0 (the largest file) is always kept."""
 
     def test_keeps_largest(self):
+        """The largest file (index 0 after size-sort) is always the kept file."""
         files = [
             _file("/a/big.jpg", "big.jpg", "/a", 5_000_000),
             _file("/b/small.jpg", "small.jpg", "/b", 1_000_000),
@@ -930,6 +1010,7 @@ class TestSmartDefaultsKeep:
         assert keep == "/a/big.jpg"
 
     def test_keeps_index_zero_even_if_camera_name(self):
+        """The keep choice is always index 0 regardless of filename quality."""
         files = [
             _file("/a/PXL_001.jpg", "PXL_001.jpg", "/a", 8_000_000),
             _file("/b/beach_vacation.jpg", "beach_vacation.jpg", "/b", 2_000_000),
@@ -938,6 +1019,7 @@ class TestSmartDefaultsKeep:
         assert keep == "/a/PXL_001.jpg"
 
     def test_keeps_index_zero_three_files(self):
+        """With three files, index 0 is still kept regardless of the other names."""
         files = [
             _file("/a/img.jpg", "img.jpg", "/a", 10_000_000),
             _file("/b/medium.jpg", "medium.jpg", "/b", 5_000_000),
@@ -953,6 +1035,7 @@ class TestSmartDefaultsRename:
     """Auto-selects the non-kept file with the most meaningful name."""
 
     def test_selects_meaningful_over_camera(self):
+        """A file with a meaningful name is selected as the rename source over a camera name."""
         files = [
             _file("/a/PXL_20231015_123.jpg", "PXL_20231015_123.jpg", "/a", 5_000_000),
             _file("/b/beach_vacation.jpg",   "beach_vacation.jpg",   "/b", 1_000_000),
@@ -961,6 +1044,7 @@ class TestSmartDefaultsRename:
         assert rename_src == "/b/beach_vacation.jpg"
 
     def test_no_rename_when_kept_already_has_good_name(self):
+        """No rename is suggested when the kept file already has a better name than all others."""
         # Kept file: 'christmas_morning' scores 16; non-kept IMG_001 scores 0
         files = [
             _file("/a/christmas_morning.jpg", "christmas_morning.jpg", "/a", 5_000_000),
@@ -970,6 +1054,7 @@ class TestSmartDefaultsRename:
         assert rename_src is None
 
     def test_no_rename_when_all_camera_names(self):
+        """When all files have camera-style names (score 0), no rename is suggested."""
         files = [
             _file("/a/PXL_001.jpg", "PXL_001.jpg", "/a", 5_000_000),
             _file("/b/IMG_002.jpg", "IMG_002.jpg", "/b", 1_000_000),
@@ -978,6 +1063,7 @@ class TestSmartDefaultsRename:
         assert rename_src is None
 
     def test_picks_best_name_among_multiple(self):
+        """The file with the highest name score is selected as the rename source."""
         # File 1 (sunset, 6 pts) loses to file 2 (beautiful_sunset_at_beach, 22 pts)
         files = [
             _file("/a/PXL_001.jpg",                  "PXL_001.jpg",                  "/a", 10_000_000),
@@ -988,6 +1074,7 @@ class TestSmartDefaultsRename:
         assert rename_src == "/c/beautiful_sunset_at_beach.jpg"
 
     def test_tie_means_no_rename(self):
+        """When kept and non-kept files have equal name scores, no rename is suggested."""
         # Kept file and only non-kept file have equal name scores → no change
         # sunset(6) vs clouds(6) — tied, so no rename
         files = [
@@ -998,6 +1085,7 @@ class TestSmartDefaultsRename:
         assert rename_src is None
 
     def test_noise_token_case_insensitive(self):
+        """Noise-token detection is case-insensitive for rename selection."""
         # 'pxl_001' should be treated as noise (lowercase)
         files = [
             _file("/a/pxl_20231015_001.jpg", "pxl_20231015_001.jpg", "/a", 5_000_000),
@@ -1013,6 +1101,7 @@ class TestSmartDefaultsFolder:
     """Auto-selects the non-kept file whose immediate parent folder is most meaningful."""
 
     def test_selects_named_folder_over_date(self):
+        """A named folder is selected as folder source over a date folder."""
         files = [
             _file("/2023-12-25/PXL_001.jpg",        "PXL_001.jpg",  "/2023-12-25",       5_000_000),
             _file("/Christmas Morning/beach.jpg",    "beach.jpg",    "/Christmas Morning", 1_000_000),
@@ -1021,6 +1110,7 @@ class TestSmartDefaultsFolder:
         assert folder_src == "/Christmas Morning/beach.jpg"
 
     def test_no_folder_when_kept_already_in_good_folder(self):
+        """No folder move is suggested when the kept file is already in the best-named folder."""
         # Kept: 'Beach Vacation'(13) > non-kept '2023-08'(0)
         files = [
             _file("/Beach Vacation/big.jpg", "big.jpg", "/Beach Vacation", 5_000_000),
@@ -1030,6 +1120,7 @@ class TestSmartDefaultsFolder:
         assert folder_src is None
 
     def test_no_folder_when_all_date_folders(self):
+        """When all files are in date folders, no folder move is suggested."""
         files = [
             _file("/2023-12/PXL_001.jpg", "PXL_001.jpg", "/2023-12", 5_000_000),
             _file("/2023-11/IMG_002.jpg", "IMG_002.jpg", "/2023-11", 1_000_000),
@@ -1038,6 +1129,7 @@ class TestSmartDefaultsFolder:
         assert folder_src is None
 
     def test_picks_best_folder_among_multiple(self):
+        """The file in the folder with the highest score is chosen as the folder source."""
         # 'Trips'(5) < 'Beach Vacation 2023'(13)
         files = [
             _file("/2023/PXL.jpg",              "PXL.jpg", "/2023",              10_000_000),
@@ -1048,6 +1140,7 @@ class TestSmartDefaultsFolder:
         assert folder_src == "/Beach Vacation 2023/b.jpg"
 
     def test_folder_source_never_equals_keep(self):
+        """The folder source is always a non-kept file; it is never the kept file itself."""
         # Kept file is in the best folder; no non-kept file can beat it
         files = [
             _file("/Christmas Party/big.jpg", "big.jpg",   "/Christmas Party", 5_000_000),
@@ -1064,6 +1157,7 @@ class TestSmartDefaultsCombined:
     """Name and folder sources can be selected from different files."""
 
     def test_best_name_and_folder_from_different_files(self):
+        """The best name and best folder may come from different non-kept files."""
         # File 1 has the best name; file 2 has the best folder
         files = [
             _file("/2023/PXL_001.jpg",           "PXL_001.jpg",        "/2023",           10_000_000),
@@ -1076,6 +1170,7 @@ class TestSmartDefaultsCombined:
         assert folder_src == "/Summer Holidays/IMG_002.jpg"  # score 14 > 0
 
     def test_best_name_and_folder_from_same_file(self):
+        """A single non-kept file can supply both the best name and the best folder."""
         # One non-kept file has both the best name and the best folder
         files = [
             _file("/2023/PXL_001.jpg",       "PXL_001.jpg", "/2023",      5_000_000),
@@ -1087,6 +1182,7 @@ class TestSmartDefaultsCombined:
         assert folder_src == "/Beach Trip/holiday.jpg"   # 'BeachTrip'(9) > 0
 
     def test_no_defaults_when_all_noise(self):
+        """No rename or folder move is suggested when all names and folders are noise."""
         # All camera names in date folders → nothing auto-selected
         files = [
             _file("/2023-12/PXL_001.jpg", "PXL_001.jpg", "/2023-12", 5_000_000),
@@ -1098,6 +1194,7 @@ class TestSmartDefaultsCombined:
         assert folder_src is None
 
     def test_realistic_pixel_vs_whatsapp(self):
+        """A Pixel original vs a WhatsApp copy: keep the Pixel, move from the named 'Media' folder."""
         # Pixel photo (large, date folder) vs WhatsApp copy (small, 'Media' folder)
         # WA name scores 0; 'Media'(5) > '2023-08'(0) → folder changes
         files = [
@@ -1112,6 +1209,7 @@ class TestSmartDefaultsCombined:
         assert folder_src == "C:/WhatsApp/Media/WA00012345-1.jpg"  # 'Media'(5) > '2023-08'(0)
 
     def test_realistic_pixel_vs_edited_copy(self):
+        """A Pixel original vs a descriptively named edit: keep the Pixel, rename and move from the edit."""
         # Large original (camera name, date folder) vs small copy with meaningful name+folder
         files = [
             _file("C:/Photos/2023/PXL_20230815_183042.jpg",
@@ -1132,42 +1230,52 @@ class TestExtraNoiseNameScore:
     """--ignore words are stripped from filename scoring."""
 
     def test_single_ignored_word_zeros_name(self):
+        """Ignoring one word removes it from scoring, leaving only the remaining tokens."""
         # "vacation" is an exact token of "beach_vacation" → that token is stripped, "beach" (5) remains
         assert _name_score("beach_vacation.jpg") == 13
         assert _name_score("beach_vacation.jpg", extra_noise=["vacation"]) == 5
 
     def test_ignored_word_alone_scores_zero(self):
+        """A filename consisting solely of an ignored word scores 0."""
         assert _name_score("vacation.jpg", extra_noise=["vacation"]) == 0
 
     def test_multiple_ignored_words_either_hits(self):
+        """Multiple ignored words each strip their matching tokens, potentially zeroing the score."""
         # Either word matches → 0
         assert _name_score("beach_vacation.jpg", extra_noise=["beach", "vacation"]) == 0
 
     def test_ignore_is_case_insensitive(self):
+        """Name ignore matching is case-insensitive regardless of token or pattern case."""
         assert _name_score("Beach_Vacation.jpg", extra_noise=["BEACH", "VACATION"]) == 0
         assert _name_score("Beach_Vacation.jpg", extra_noise=["beach", "vacation"]) == 0
         assert _name_score("Beach_Vacation.jpg", extra_noise=["Beach", "Vacation"]) == 0
 
     def test_pattern_not_present_does_not_affect_score(self):
+        """An ignore pattern not present in the filename leaves the score unchanged."""
         # "trip" is not in "beach_vacation" → score unchanged
         assert _name_score("beach_vacation.jpg", extra_noise=["trip"]) == 13
 
     def test_ignore_zeros_name_containing_pattern(self):
+        """Stripping an ignored token lowers but does not necessarily zero the score."""
         # "vacation" token stripped from "beach_vacation_sunset" → "beach"(5)+"sunset"(6) = 11
         assert _name_score("beach_vacation_sunset.jpg", extra_noise=["vacation"]) == 11
 
     def test_empty_extra_noise_unchanged(self):
+        """An empty ignore list does not change the name score."""
         assert _name_score("beach_vacation.jpg", extra_noise=[]) == 13
 
     def test_hyphenated_pattern_not_a_substring(self):
+        """A hyphenated ignore pattern does not match tokens joined by underscores."""
         # "beach-vacation" is NOT a substring of "beach_vacation" → score unchanged
         assert _name_score("beach_vacation.jpg", extra_noise=["beach-vacation"]) == 13
 
     def test_underscore_pattern(self):
+        """An underscore-joined ignore pattern matches the full underscore token."""
         # "beach_vacation" IS a substring of "beach_vacation" → score 0
         assert _name_score("beach_vacation.jpg", extra_noise=["beach_vacation"]) == 0
 
     def test_space_pattern(self):
+        """A space-joined ignore pattern matches the full space-separated token."""
         assert _name_score("beach vacation.jpg", extra_noise=["beach vacation"]) == 0
 
 
@@ -1175,38 +1283,47 @@ class TestExtraNoiseFolderScore:
     """--ignore words are stripped from folder scoring (exact token or exact whole-name match)."""
 
     def test_single_ignored_word_strips_token(self):
+        """Ignoring one word removes it from the folder name score, leaving the rest."""
         # "vacation" is an exact token of "Beach Vacation" → stripped, "Beach" (5) remains
         assert _folder_score("/Photos/Beach Vacation") == 13
         assert _folder_score("/Photos/Beach Vacation", extra_noise=["vacation"]) == 5
 
     def test_ignored_word_alone_scores_minus_one(self):
+        """A folder whose entire name is an ignored word scores -1 (demoted below date folders)."""
         # Entire folder component exactly equals noise word → scores -1 (demoted)
         assert _folder_score("/Vacation", extra_noise=["vacation"]) == -1
 
     def test_multiple_ignored_words_both_stripped(self):
+        """Multiple ignored words each strip their matching tokens from the folder name."""
         # Both tokens stripped → empty → 0
         assert _folder_score("/Beach Vacation", extra_noise=["beach", "vacation"]) == 0
 
     def test_ignore_is_case_insensitive(self):
+        """Folder ignore matching is case-insensitive regardless of token or pattern case."""
         assert _folder_score("/Beach Vacation", extra_noise=["BEACH", "VACATION"]) == 0
         assert _folder_score("/Beach Vacation", extra_noise=["Beach", "Vacation"]) == 0
 
     def test_pattern_not_present_does_not_affect_score(self):
+        """An ignore pattern not present in the folder name leaves the score unchanged."""
         # "trip" is not in "DCIM" → score unchanged
         assert _folder_score("/DCIM", extra_noise=["vacation"]) == 4
 
     def test_empty_extra_noise_unchanged(self):
+        """An empty ignore list does not change the folder score."""
         assert _folder_score("/Beach Vacation", extra_noise=[]) == 13
 
     def test_hyphenated_pattern_not_a_substring(self):
+        """A hyphenated pattern does not match space-separated or underscore-separated folder tokens."""
         # "beach-vacation" does not match token "Beach" or "Vacation" → score unchanged
         assert _folder_score("/Beach Vacation", extra_noise=["beach-vacation"]) == 13
 
     def test_underscore_pattern(self):
+        """An underscore-joined pattern matching the whole folder component scores -1."""
         # "beach_vacation" exactly equals the whole folder component → scores -1
         assert _folder_score("/Beach_Vacation", extra_noise=["beach_vacation"]) == -1
 
     def test_space_pattern(self):
+        """A space-joined pattern matching the whole folder component scores -1."""
         # "beach vacation" exactly equals the whole folder component → scores -1
         assert _folder_score("/Beach Vacation", extra_noise=["beach vacation"]) == -1
 
@@ -1215,6 +1332,7 @@ class TestExtraNoiseSmartDefaults:
     """--ignore flows through _smart_defaults selection logic."""
 
     def test_ignore_demotes_filename_so_no_rename_selected(self):
+        """Ignoring all words in a filename drops its score to 0, preventing rename selection."""
         # Without ignore: 'beach_vacation'(13) wins over PXL(0) → rename selected
         files = [
             _file("/a/PXL_001.jpg",         "PXL_001.jpg",       "/a", 5_000_000),
@@ -1228,6 +1346,7 @@ class TestExtraNoiseSmartDefaults:
         assert rename_src is None
 
     def test_ignore_demotes_folder_so_no_folder_selected(self):
+        """Ignoring all words in a folder name drops its score to 0, preventing folder selection."""
         # Without ignore: 'Beach Trip'(9) wins over '2023'(0) → folder selected
         files = [
             _file("/2023/PXL_001.jpg",     "PXL_001.jpg", "/2023",      5_000_000),
@@ -1241,6 +1360,7 @@ class TestExtraNoiseSmartDefaults:
         assert folder_src is None
 
     def test_ignore_selects_different_best_name(self):
+        """Ignoring a word can shift which non-kept file has the highest name score."""
         # File 1: 'sunset_beach'(11); file 2: 'sunset_vacation'(14)
         # Ignoring 'vacation' makes file 1 win
         files = [
@@ -1255,6 +1375,7 @@ class TestExtraNoiseSmartDefaults:
         assert rename_src == "/b/sunset_beach.jpg"     # 11 > 6 (only 'sunset' left in file 2)
 
     def test_ignore_does_not_affect_keep(self):
+        """extra_noise never affects which file is kept (always index 0 regardless of noise)."""
         # extra_noise never changes which file is kept (always index 0)
         files = [
             _file("/a/vacation.jpg", "vacation.jpg", "/Vacation", 5_000_000),
@@ -1264,6 +1385,7 @@ class TestExtraNoiseSmartDefaults:
         assert keep == "/a/vacation.jpg"
 
     def test_ignored_kept_folder_defers_to_non_ignored_folder(self):
+        """A kept file in an ignored folder (score -1) loses to a date folder (score 0), triggering a move."""
         # Kept file is in a folder whose name exactly equals the noise word (scores -1).
         # The date folder scores 0 → 0 > -1 → move to date folder is suggested.
         files = [
@@ -1274,6 +1396,7 @@ class TestExtraNoiseSmartDefaults:
         assert folder_src == "/2023-08/small.jpg"
 
     def test_all_ignored_folders_no_folder_move(self):
+        """When every replica is in an ignored folder, no folder move is suggested."""
         # Every replica is in an ignored folder → destination stays as-is.
         files = [
             _file("/Vacation/big.jpg",  "big.jpg",  "/Vacation", 5_000_000),
@@ -1293,12 +1416,14 @@ class TestGroupsToJson:
         return list(entries)
 
     def test_keep_default_is_first_file(self):
+        """keep_default is always the first (largest) file in the group."""
         from idem import _groups_to_json
         groups = [[(("/a/big.jpg"), 5_000_000), ("/b/small.jpg", 1_000_000)]]
         result = _groups_to_json(groups, "/")
         assert result[0]["keep_default"] == "/a/big.jpg"
 
     def test_rename_src_none_when_first_name_wins(self):
+        """rename_src is None when the first file already has the best name."""
         # First file has the most meaningful name → no rename suggested
         from idem import _groups_to_json
         groups = [[(("/a/sunset_beach.jpg"), 5_000_000), ("/b/IMG_001.jpg", 1_000_000)]]
@@ -1306,18 +1431,21 @@ class TestGroupsToJson:
         assert result[0]["rename_src"] is None
 
     def test_rename_src_set_when_other_name_wins(self):
+        """rename_src is set to the file with the better name when the kept file's name is weaker."""
         from idem import _groups_to_json
         groups = [[(("/a/IMG_001.jpg"), 5_000_000), ("/b/sunset_beach.jpg", 1_000_000)]]
         result = _groups_to_json(groups, "/")
         assert result[0]["rename_src"] == "/b/sunset_beach.jpg"
 
     def test_folder_src_set_when_other_folder_wins(self):
+        """folder_src is set to the file in the most descriptively named folder."""
         from idem import _groups_to_json
         groups = [[(("/2023/IMG_001.jpg"), 5_000_000), ("/Beach Trip/a.jpg", 1_000_000)]]
         result = _groups_to_json(groups, "/")
         assert result[0]["folder_src"] == "/Beach Trip/a.jpg"
 
     def test_ignore_flows_through_to_smart_defaults(self):
+        """The ignore list is forwarded to _smart_defaults, affecting folder_src selection."""
         # Without ignore, 'Beach Trip' folder wins → folder_src set.
         # With 'beach' and 'trip' ignored, both tokens stripped → score 0, same as kept → folder_src None.
         from idem import _groups_to_json
@@ -1328,12 +1456,14 @@ class TestGroupsToJson:
         assert with_ignore[0]["folder_src"] is None
 
     def test_ignore_case_insensitive(self):
+        """Ignore matching in _groups_to_json is case-insensitive."""
         from idem import _groups_to_json
         groups = [[(("/2023/IMG_001.jpg"), 5_000_000), ("/Beach Trip/a.jpg", 1_000_000)]]
         result = _groups_to_json(groups, "/", ignore=("BEACH", "TRIP"))
         assert result[0]["folder_src"] is None
 
     def test_multiple_groups_each_get_defaults(self):
+        """Each group in the output independently receives its own smart defaults."""
         from idem import _groups_to_json
         groups = [
             [("/a/IMG_001.jpg", 5_000_000), ("/b/sunset.jpg", 1_000_000)],
@@ -1344,6 +1474,7 @@ class TestGroupsToJson:
         assert result[1]["rename_src"] == "/d/holiday.jpg"
 
     def test_fields_present_in_each_group(self):
+        """Every group dict contains the required keys: keep_default, rename_src, folder_src, files."""
         from idem import _groups_to_json
         groups = [[("/a/x.jpg", 1_000_000), ("/b/y.jpg", 500_000)]]
         result = _groups_to_json(groups, "/")
@@ -1381,7 +1512,7 @@ class TestCLILimitArg:
     """--limit restricts the number of duplicate groups processed in review mode."""
 
     def test_limit_arg_accepted(self, tmp_path):
-        """--limit is a valid argument and doesn't cause a CLI error."""
+        """--limit is a valid argument and the script exits cleanly."""
         write_image(tmp_path / "a.jpg")
         result = _run([str(tmp_path), "--limit", "5"], tmp_path)
         assert result.returncode == 0, result.stderr
@@ -1463,6 +1594,7 @@ class TestResolveTransform:
     # ── path validation ────────────────────────────────────────────────────────
 
     def test_path_not_in_keep_set_is_error(self, tmp_path):
+        """Attempting to transform a path not in the keep set returns an error string."""
         path = self._make(tmp_path)
         result = _resolve_transform(
             {"path": path, "new_name": "other.jpg"},
@@ -1473,6 +1605,7 @@ class TestResolveTransform:
         assert "non-kept" in result
 
     def test_path_outside_dir_resolved_is_error(self, tmp_path):
+        """A path outside the scan directory returns an error string."""
         outside = tmp_path.parent / "outside.jpg"
         outside.write_bytes(b"x")
         keep = str(outside)
@@ -1485,6 +1618,7 @@ class TestResolveTransform:
         assert "Invalid path" in result
 
     def test_file_not_on_disk_is_error(self, tmp_path):
+        """A path that does not exist on disk returns an error string."""
         missing = str(tmp_path / "ghost.jpg")
         result = _resolve_transform(
             {"path": missing, "new_name": "other.jpg"},
@@ -1495,6 +1629,7 @@ class TestResolveTransform:
         assert "File not found" in result
 
     def test_non_string_path_is_error(self, tmp_path):
+        """A non-string path value is rejected with an error string."""
         result = _resolve_transform(
             {"path": 42, "new_name": "other.jpg"},
             keep_set={42},
@@ -1540,6 +1675,7 @@ class TestResolveTransform:
     # ── target_dir validation ──────────────────────────────────────────────────
 
     def test_target_dir_outside_dir_resolved_is_error(self, tmp_path):
+        """A target directory outside the scan root returns an error string."""
         path = self._make(tmp_path)
         result = _resolve_transform(
             {"path": path, "target_dir": str(tmp_path.parent)},
@@ -1550,6 +1686,7 @@ class TestResolveTransform:
         assert "Invalid target folder" in result
 
     def test_target_dir_does_not_exist_is_error(self, tmp_path):
+        """A target directory that does not exist on disk returns an error string."""
         path = self._make(tmp_path)
         result = _resolve_transform(
             {"path": path, "target_dir": str(tmp_path / "nonexistent")},
@@ -1573,6 +1710,7 @@ class TestResolveTransform:
     # ── destination collision ──────────────────────────────────────────────────
 
     def test_dst_already_exists_is_error(self, tmp_path):
+        """A destination filename that already exists on disk returns an error string."""
         path = self._make(tmp_path, "a.jpg")
         (tmp_path / "b.jpg").write_bytes(b"x")  # collision target
         result = _resolve_transform(
@@ -1586,6 +1724,7 @@ class TestResolveTransform:
     # ── no-op ──────────────────────────────────────────────────────────────────
 
     def test_same_name_no_target_dir_is_noop(self, tmp_path):
+        """Renaming to the same name in the same directory is a no-op (returns None)."""
         path = self._make(tmp_path, "img.jpg")
         result = _resolve_transform(
             {"path": path, "new_name": "img.jpg"},
@@ -1595,6 +1734,7 @@ class TestResolveTransform:
         assert result is None
 
     def test_no_new_name_no_target_dir_is_noop(self, tmp_path):
+        """No rename and no folder move is a no-op (returns None)."""
         path = self._make(tmp_path, "img.jpg")
         result = _resolve_transform(
             {"path": path},
@@ -1606,6 +1746,7 @@ class TestResolveTransform:
     # ── success cases ──────────────────────────────────────────────────────────
 
     def test_rename_only_returns_correct_dst(self, tmp_path):
+        """A rename-only transform returns the correct (src, dst) path pair."""
         path = self._make(tmp_path, "old.jpg")
         src, dst = _resolve_transform(
             {"path": path, "new_name": "new.jpg"},
@@ -1616,6 +1757,7 @@ class TestResolveTransform:
         assert dst == (tmp_path / "new.jpg").resolve()
 
     def test_move_only_returns_correct_dst(self, tmp_path):
+        """A move-only transform returns the correct (src, dst) path pair."""
         subdir = tmp_path / "sub"
         subdir.mkdir()
         path = self._make(tmp_path, "img.jpg")
@@ -1628,6 +1770,7 @@ class TestResolveTransform:
         assert dst == (subdir / "img.jpg").resolve()
 
     def test_rename_and_move_returns_correct_dst(self, tmp_path):
+        """A combined rename+move returns the correctly named file in the target directory."""
         subdir = tmp_path / "sub"
         subdir.mkdir()
         path = self._make(tmp_path, "old.jpg")
@@ -1654,9 +1797,11 @@ class TestResolveTransform:
 
 class TestVCacheIO:
     def test_missing_file_returns_empty(self, tmp_path):
+        """A non-existent vcache file returns an empty dict rather than raising."""
         assert load_vcache(str(tmp_path / "nonexistent.csv")) == {}
 
     def test_round_trip_preserves_data(self, tmp_path):
+        """Video cache data saved and reloaded with save/load_vcache is bit-for-bit identical."""
         cache_path = str(tmp_path / "vcache.csv")
         original = {
             "\\videos\\a.mp4": {
@@ -1669,6 +1814,7 @@ class TestVCacheIO:
         assert loaded == original
 
     def test_load_normalizes_types(self, tmp_path):
+        """Loaded vcache entries have the correct Python types (int size, float mtime, list vhash)."""
         cache_path = str(tmp_path / "vcache.csv")
         with open(cache_path, "w", newline="", encoding="utf-8") as f:
             writer = csv.DictWriter(f, fieldnames=VCACHE_FIELDS)
@@ -1685,6 +1831,7 @@ class TestVCacheIO:
         assert isinstance(entry["vhash"], list)
 
     def test_invalid_vhash_row_skipped(self, tmp_path):
+        """A row with a non-hex vhash value is skipped entirely on load."""
         cache_path = str(tmp_path / "vcache.csv")
         with open(cache_path, "w", newline="", encoding="utf-8") as f:
             writer = csv.DictWriter(f, fieldnames=VCACHE_FIELDS)
@@ -1696,6 +1843,7 @@ class TestVCacheIO:
         assert load_vcache(cache_path) == {}
 
     def test_empty_vhash_row_skipped(self, tmp_path):
+        """A row with an empty vhash string is skipped on load."""
         cache_path = str(tmp_path / "vcache.csv")
         with open(cache_path, "w", newline="", encoding="utf-8") as f:
             writer = csv.DictWriter(f, fieldnames=VCACHE_FIELDS)
@@ -1707,12 +1855,14 @@ class TestVCacheIO:
         assert load_vcache(cache_path) == {}
 
     def test_corrupt_file_returns_empty_dict(self, tmp_path):
+        """A vcache file with invalid content returns an empty dict rather than raising."""
         cache_path = str(tmp_path / "vcache.csv")
         Path(cache_path).write_text("garbage\ndata\n", encoding="utf-8")
         result = load_vcache(cache_path)
         assert isinstance(result, dict)
 
     def test_save_overwrites_existing_file(self, tmp_path):
+        """save_vcache replaces an existing file rather than appending to it."""
         cache_path = str(tmp_path / "vcache.csv")
         save_vcache(cache_path, {})
         data = {
@@ -1725,6 +1875,7 @@ class TestVCacheIO:
         assert "\\videos\\a.mp4" in loaded
 
     def test_multiple_frame_hashes_round_trip(self, tmp_path):
+        """Multiple per-frame hash strings survive the save/load round-trip intact."""
         cache_path = str(tmp_path / "vcache.csv")
         frames = [format(i, "016x") for i in range(N_VIDEO_FRAMES)]
         original = {
@@ -1741,29 +1892,35 @@ class TestVCacheIO:
 
 class TestVideoDistance:
     def test_identical_frames_zero_distance(self):
+        """Two identical frame-hash sequences have a distance of 0.0."""
         frames = [0xAABBCCDD00112233, 0x1122334455667788]
         assert _video_distance(frames, frames) == 0.0
 
     def test_all_bits_flipped_max_distance(self):
+        """Completely opposite frame hashes produce the maximum distance of 64.0."""
         a = [0x0000000000000000]
         b = [0xFFFFFFFFFFFFFFFF]
         assert _video_distance(a, b) == 64.0
 
     def test_mean_across_frames(self):
+        """The distance is the mean Hamming distance across all compared frame pairs."""
         # Frame 0: 0 bits differ; frame 1: 64 bits differ → mean = 32.0
         a = [0x0000000000000000, 0x0000000000000000]
         b = [0x0000000000000000, 0xFFFFFFFFFFFFFFFF]
         assert _video_distance(a, b) == 32.0
 
     def test_unequal_lengths_uses_minimum(self):
+        """When frame lists differ in length, only the shorter list's frames are compared."""
         a = [0x0000000000000000, 0xFFFFFFFFFFFFFFFF]
         b = [0x0000000000000000]
         assert _video_distance(a, b) == 0.0
 
     def test_empty_frames_returns_inf(self):
+        """Empty frame lists return infinity, ensuring they are never grouped as duplicates."""
         assert _video_distance([], []) == float("inf")
 
     def test_partial_bit_difference(self):
+        """A partial bit difference is reflected exactly in the distance score."""
         # 0x000000000000000F has 4 set bits → distance 4 from 0x0
         a = [0x0000000000000000]
         b = [0x000000000000000F]
@@ -1781,13 +1938,16 @@ class TestGroupVideoDuplicates:
         return str(p), (duration, frames, size)
 
     def test_empty_input(self):
+        """An empty vhash dict returns no duplicate groups."""
         assert group_video_duplicates({}, threshold=10) == []
 
     def test_single_video_not_grouped(self, tmp_path):
+        """A single video cannot form a duplicate group."""
         path, entry = self._entry(tmp_path, "a.mp4", 60.0, [0] * 8)
         assert group_video_duplicates({path: entry}, threshold=10) == []
 
     def test_identical_hashes_grouped(self, tmp_path):
+        """Two videos with identical frame hashes are placed in one duplicate group."""
         frames = [0] * 8
         pa, ea = self._entry(tmp_path, "a.mp4", 60.0, frames, size=2000)
         pb, eb = self._entry(tmp_path, "b.mp4", 60.0, frames, size=1000)
@@ -1796,12 +1956,14 @@ class TestGroupVideoDuplicates:
         assert {p for p, _ in groups[0]} == {pa, pb}
 
     def test_distant_hashes_not_grouped(self, tmp_path):
+        """Videos with maximum hash distance are not grouped as duplicates."""
         pa, ea = self._entry(tmp_path, "a.mp4", 60.0, [0x0000000000000000] * 8)
         pb, eb = self._entry(tmp_path, "b.mp4", 60.0, [0xFFFFFFFFFFFFFFFF] * 8)
         groups = group_video_duplicates({pa: ea, pb: eb}, threshold=10)
         assert groups == []
 
     def test_threshold_boundary(self, tmp_path):
+        """Videos at or below the mean-distance threshold are grouped; above it they are not."""
         # One frame differs by 4 bits, rest identical → mean distance = 4/8 = 0.5
         frames_a = [0x0000000000000000] * 8
         frames_b = [0x000000000000000F] + [0x0000000000000000] * 7
@@ -1811,6 +1973,7 @@ class TestGroupVideoDuplicates:
         assert len(group_video_duplicates({pa: ea, pb: eb}, threshold=1)) == 1
 
     def test_duration_filter_excludes_far_durations(self, tmp_path):
+        """Videos whose durations differ by more than the tolerance are not grouped."""
         frames = [0] * 8
         # 60s vs 200s: diff=140 > max(10, 0.05*200=10) → excluded
         pa, ea = self._entry(tmp_path, "a.mp4", 60.0, frames)
@@ -1818,6 +1981,7 @@ class TestGroupVideoDuplicates:
         assert group_video_duplicates({pa: ea, pb: eb}, threshold=0) == []
 
     def test_duration_filter_includes_within_relative_tolerance(self, tmp_path):
+        """Videos within the relative duration tolerance are eligible for grouping."""
         frames = [0] * 8
         # 60s vs 67s: diff=7 < max(10, 0.05*67=3.35) = 10 → within tolerance
         pa, ea = self._entry(tmp_path, "a.mp4", 60.0, frames)
@@ -1825,6 +1989,7 @@ class TestGroupVideoDuplicates:
         assert len(group_video_duplicates({pa: ea, pb: eb}, threshold=0)) == 1
 
     def test_duration_absolute_tolerance_for_short_videos(self, tmp_path):
+        """Short videos use an absolute (not percentage) duration tolerance."""
         # Short videos: 5s vs 14s, diff=9 < max(10, 0.05*14=0.7) = 10 → within
         frames = [0] * 8
         pa, ea = self._entry(tmp_path, "a.mp4", 5.0, frames)
@@ -1832,6 +1997,7 @@ class TestGroupVideoDuplicates:
         assert len(group_video_duplicates({pa: ea, pb: eb}, threshold=0)) == 1
 
     def test_duration_absolute_tolerance_boundary(self, tmp_path):
+        """Videos just outside the absolute duration tolerance boundary are excluded."""
         # 5s vs 16s: diff=11 > max(10, 0.05*16=0.8) = 10 → excluded
         frames = [0] * 8
         pa, ea = self._entry(tmp_path, "a.mp4", 5.0, frames)
@@ -1839,6 +2005,7 @@ class TestGroupVideoDuplicates:
         assert group_video_duplicates({pa: ea, pb: eb}, threshold=0) == []
 
     def test_within_group_sorted_largest_first(self, tmp_path):
+        """Within a video group, the largest file (by byte size) appears first."""
         frames = [0] * 8
         pa, ea = self._entry(tmp_path, "large.mp4", 60.0, frames, size=5000)
         pb, eb = self._entry(tmp_path, "small.mp4", 60.0, frames, size=1000)
@@ -1848,6 +2015,7 @@ class TestGroupVideoDuplicates:
         assert groups[0][0][1] == 5000
 
     def test_groups_sorted_most_files_first(self, tmp_path):
+        """Video groups with more files appear before groups with fewer files."""
         frames_a = [0x0000000000000000] * 8
         frames_b = [0xFFFFFFFFFFFFFFFF] * 8
         trio = [self._entry(tmp_path, f"trio{i}.mp4", 60.0, frames_a) for i in range(3)]
@@ -1869,6 +2037,7 @@ class TestGroupVideoDuplicates:
         assert len(groups[0]) == 3
 
     def test_no_file_appears_in_two_groups(self, tmp_path):
+        """Each video appears in at most one duplicate group."""
         frames_a = [0x0000000000000000] * 8
         frames_b = [0xFFFFFFFFFFFFFFFF] * 8
         group1 = [self._entry(tmp_path, f"g1_{i}.mp4", 60.0, frames_a) for i in range(3)]
@@ -1883,10 +2052,12 @@ class TestGroupVideoDuplicates:
 
 class TestFfmpegAvailable:
     def test_returns_true_when_ffmpeg_found(self):
+        """Returns True when ffmpeg is found in PATH."""
         with patch("shutil.which", return_value="/usr/bin/ffmpeg"):
             assert ffmpeg_available() is True
 
     def test_returns_false_when_ffmpeg_missing(self):
+        """Returns False when ffmpeg is absent from PATH."""
         with patch("shutil.which", return_value=None):
             assert ffmpeg_available() is False
 
@@ -1909,6 +2080,7 @@ class TestGetVideoDuration:
         return r
 
     def test_uses_ffprobe_when_available(self, tmp_path):
+        """Uses ffprobe to obtain the duration when it is available in PATH."""
         dummy = tmp_path / "v.mp4"
         dummy.write_bytes(b"x")
         with patch("shutil.which", return_value="/usr/bin/ffprobe"), \
@@ -1918,6 +2090,7 @@ class TestGetVideoDuration:
         assert mock_run.call_args[0][0][0] == "ffprobe"
 
     def test_falls_back_to_ffmpeg_when_ffprobe_absent(self, tmp_path):
+        """Falls back to parsing ffmpeg stderr 'Duration:' line when ffprobe is absent."""
         dummy = tmp_path / "v.mp4"
         dummy.write_bytes(b"x")
         stderr = "... Duration: 00:02:03.50, start: ..."
@@ -1927,6 +2100,7 @@ class TestGetVideoDuration:
         assert abs(dur - (2 * 60 + 3.5)) < 0.01
 
     def test_raises_when_neither_works(self, tmp_path):
+        """Raises RuntimeError when neither ffprobe nor ffmpeg can provide a duration."""
         dummy = tmp_path / "v.mp4"
         dummy.write_bytes(b"x")
         with patch("shutil.which", return_value=None), \
@@ -1968,6 +2142,7 @@ class TestComputeVideoHashes:
         return r
 
     def test_returns_duration_and_n_hashes(self, tmp_path):
+        """Returns a (duration, frames) tuple with exactly n integer frame hashes."""
         dummy = tmp_path / "v.mp4"
         dummy.write_bytes(b"x")
         with patch("idem._get_video_duration", return_value=80.0), \
@@ -1978,6 +2153,7 @@ class TestComputeVideoHashes:
         assert all(isinstance(f, int) for f in frames)
 
     def test_n_controls_frame_count(self, tmp_path):
+        """The n parameter controls exactly how many frame hashes are returned."""
         dummy = tmp_path / "v.mp4"
         dummy.write_bytes(b"x")
         with patch("idem._get_video_duration", return_value=60.0), \
@@ -1986,6 +2162,7 @@ class TestComputeVideoHashes:
         assert len(frames) == 3
 
     def test_ffmpeg_failure_raises(self, tmp_path):
+        """An ffmpeg subprocess failure raises a RuntimeError."""
         dummy = tmp_path / "v.mp4"
         dummy.write_bytes(b"x")
         with patch("idem._get_video_duration", return_value=60.0), \
@@ -1994,6 +2171,7 @@ class TestComputeVideoHashes:
                 compute_video_hashes(str(dummy), n=4)
 
     def test_zero_duration_raises(self, tmp_path):
+        """A zero-duration video raises a RuntimeError (cannot sample frames)."""
         dummy = tmp_path / "v.mp4"
         dummy.write_bytes(b"x")
         with patch("idem._get_video_duration", return_value=0.0):
@@ -2001,6 +2179,7 @@ class TestComputeVideoHashes:
                 compute_video_hashes(str(dummy), n=4)
 
     def test_identical_frames_produce_identical_hashes(self, tmp_path):
+        """The same visual content always produces the same frame hash sequence."""
         dummy = tmp_path / "v.mp4"
         dummy.write_bytes(b"x")
         with patch("idem._get_video_duration", return_value=60.0), \
@@ -2012,6 +2191,7 @@ class TestComputeVideoHashes:
         assert frames1 == frames2
 
     def test_different_frames_produce_different_hashes(self, tmp_path):
+        """Different visual content (spatially flipped frames) produces different hashes."""
         # flip=False: white on bottom half; flip=True: white on top half
         # These have inverted spatial structure → different low-frequency DCT → different pHash
         dummy = tmp_path / "v.mp4"
@@ -2049,6 +2229,7 @@ class TestBuildVideoHashes:
         }
 
     def test_new_file_hashed_and_counted(self, tmp_path):
+        """A video file not in the vcache is hashed and counted as new."""
         (path,) = self._files(tmp_path, "a.mp4")
         with patch("idem.compute_video_hashes",
                    return_value=(self.FAKE_DURATION, self.FAKE_FRAMES)):
@@ -2059,6 +2240,7 @@ class TestBuildVideoHashes:
         assert path in vhashes
 
     def test_vhashes_tuple_structure(self, tmp_path):
+        """The vhashes dict stores (duration, frames, size) tuples keyed by file path."""
         (path,) = self._files(tmp_path, "a.mp4", size=500)
         with patch("idem.compute_video_hashes",
                    return_value=(self.FAKE_DURATION, self.FAKE_FRAMES)):
@@ -2069,6 +2251,7 @@ class TestBuildVideoHashes:
         assert size == 500
 
     def test_cache_hit_skips_recompute(self, tmp_path):
+        """A video with unchanged size/mtime is served from cache without calling compute_video_hashes."""
         (path,) = self._files(tmp_path, "a.mp4")
         cache = {path_without_drive(path): self._cached_entry(path)}
         with patch("idem.compute_video_hashes") as mock_compute:
@@ -2079,6 +2262,7 @@ class TestBuildVideoHashes:
         assert errors == 0
 
     def test_stale_size_triggers_recompute(self, tmp_path):
+        """A video whose cached size no longer matches disk is re-hashed and counted as re-hashed."""
         (path,) = self._files(tmp_path, "a.mp4")
         entry = self._cached_entry(path)
         entry["size"] += 1
@@ -2090,6 +2274,7 @@ class TestBuildVideoHashes:
         assert errors == 0
 
     def test_stale_mtime_triggers_recompute(self, tmp_path):
+        """A video whose cached mtime differs beyond the tolerance is re-hashed."""
         (path,) = self._files(tmp_path, "a.mp4")
         entry = self._cached_entry(path)
         entry["mtime"] -= _TS_TOLERANCE + 10
@@ -2100,6 +2285,7 @@ class TestBuildVideoHashes:
         assert rehashed_c == 1
 
     def test_compute_error_counted_not_in_vhashes(self, tmp_path):
+        """Videos that fail to hash are counted as errors and excluded from vhashes."""
         (path,) = self._files(tmp_path, "bad.mp4")
         with patch("idem.compute_video_hashes",
                    side_effect=RuntimeError("ffmpeg failed")):
@@ -2108,6 +2294,7 @@ class TestBuildVideoHashes:
         assert path not in vhashes
 
     def test_cache_key_is_driveless(self, tmp_path):
+        """Video cache keys are stored without drive letters for cross-platform consistency."""
         (path,) = self._files(tmp_path, "a.mp4")
         cache = {}
         with patch("idem.compute_video_hashes",
@@ -2117,6 +2304,7 @@ class TestBuildVideoHashes:
             assert not (len(key) >= 2 and key[1] == ":"), f"Drive letter in key: {key!r}"
 
     def test_cache_stores_hex_frame_strings(self, tmp_path):
+        """Frame hashes are stored in the vcache as hex strings, not raw integers."""
         (path,) = self._files(tmp_path, "a.mp4")
         cache = {}
         with patch("idem.compute_video_hashes",
@@ -2127,6 +2315,7 @@ class TestBuildVideoHashes:
         assert all(isinstance(h, str) for h in cache[key]["vhash"])
 
     def test_multiple_files(self, tmp_path):
+        """Multiple video files are all hashed in a single call, each counted independently."""
         paths = self._files(tmp_path, "a.mp4", "b.mp4", "c.mp4")
         with patch("idem.compute_video_hashes",
                    return_value=(self.FAKE_DURATION, self.FAKE_FRAMES)):
@@ -2136,6 +2325,7 @@ class TestBuildVideoHashes:
         assert errors == 0
 
     def test_cache_appended_via_writer(self, tmp_path):
+        """Newly computed video hashes are flushed to the vcache file incrementally via the writer."""
         (path,) = self._files(tmp_path, "a.mp4")
         cache_path = str(tmp_path / VCACHE_FILENAME)
         with patch("idem.compute_video_hashes",
@@ -2154,41 +2344,52 @@ class TestBuildVideoHashes:
 
 class TestValidHex:
     def test_empty_string_returns_false(self):
+        """An empty string is not a valid hex string."""
         assert _valid_hex("") is False
 
     def test_single_digit(self):
+        """A single decimal digit is a valid hex character."""
         assert _valid_hex("0") is True
 
     def test_all_lowercase_hex(self):
+        """All-lowercase hex characters (a-f, 0-9) are accepted."""
         assert _valid_hex("deadbeef") is True
 
     def test_all_uppercase_hex(self):
+        """All-uppercase hex characters (A-F, 0-9) are accepted."""
         assert _valid_hex("DEADBEEF") is True
 
     def test_mixed_case_hex(self):
+        """Mixed-case hex characters are accepted."""
         assert _valid_hex("aAbBcCdD") is True
 
     def test_invalid_char(self):
+        """Non-hex characters (e.g. 'z') cause the function to return False."""
         assert _valid_hex("zzzz") is False
 
     def test_hex_prefix_rejected(self):
+        """The '0x' prefix is rejected because 'x' is not a valid hex character."""
         # 'x' is not a valid hex character
         assert _valid_hex("0x1234") is False
 
 
 class TestFmtSizeExtra:
     def test_terabytes(self):
+        """Values in the TB range are formatted with a 'TB' suffix."""
         assert "TB" in fmt_size(5 * 1024 ** 4)
 
     def test_boundary_1023_is_bytes(self):
+        """1023 bytes is still formatted as bytes, not KB (boundary just below 1 KB)."""
         assert "B" in fmt_size(1023)
 
     def test_boundary_1024_is_kb(self):
+        """1024 bytes is formatted as 1 KB (exact boundary)."""
         assert "KB" in fmt_size(1024)
 
 
 class TestPathWithoutDriveExtra:
     def test_unc_path(self):
+        """UNC paths (\\\\server\\share\\...) have the server/share prefix stripped."""
         result = path_without_drive("\\\\server\\share\\file.jpg")
         assert "file.jpg" in result
         assert not result.startswith("\\\\server")
@@ -2199,49 +2400,63 @@ class TestPathWithoutDriveExtra:
 
 class TestParseSize:
     def test_bare_integer(self):
+        """A bare integer string (no suffix) is parsed as a byte count."""
         assert parse_size("500") == 500
 
     def test_b_suffix(self):
+        """A 'b' suffix is treated as bytes."""
         assert parse_size("512b") == 512
 
     def test_kb_lowercase(self):
+        """Lowercase 'kb' suffix is parsed as kilobytes."""
         assert parse_size("50kb") == 50 * 1024
 
     def test_kb_uppercase(self):
+        """Uppercase 'KB' suffix is also parsed as kilobytes."""
         assert parse_size("50KB") == 50 * 1024
 
     def test_mb(self):
+        """'MB' suffix is parsed as megabytes."""
         assert parse_size("2MB") == 2 * 1024 ** 2
 
     def test_gb(self):
+        """'GB' suffix is parsed as gigabytes."""
         assert parse_size("1GB") == 1024 ** 3
 
     def test_tb(self):
+        """'TB' suffix is parsed as terabytes."""
         assert parse_size("1TB") == 1024 ** 4
 
     def test_decimal_kb(self):
+        """Fractional kilobyte values are parsed and truncated to an integer."""
         assert parse_size("1.5kb") == int(1.5 * 1024)
 
     def test_decimal_mb(self):
+        """Fractional megabyte values are parsed and truncated to an integer."""
         assert parse_size("2.5MB") == int(2.5 * 1024 ** 2)
 
     def test_case_insensitive_mb(self):
+        """Suffix matching is case-insensitive ('mb' same as 'MB')."""
         assert parse_size("2mb") == 2 * 1024 ** 2
 
     def test_leading_whitespace_stripped(self):
+        """Leading whitespace is stripped before parsing."""
         assert parse_size("  10kb") == 10 * 1024
 
     def test_invalid_string_raises(self):
+        """A string with no recognisable size suffix raises an exception."""
         with pytest.raises((ValueError, TypeError)):
             parse_size("abc")
 
     def test_empty_string_raises(self):
+        """An empty string raises an exception."""
         with pytest.raises((ValueError, TypeError)):
             parse_size("")
 
 
 class TestFileChecksum:
     def test_result_is_64_char_hex(self, tmp_path):
+        """The checksum is a 64-character hex string (SHA-256 digest)."""
         p = tmp_path / "a.bin"
         p.write_bytes(b"hello world")
         result = _file_checksum(str(p))
@@ -2249,6 +2464,7 @@ class TestFileChecksum:
         assert _valid_hex(result)
 
     def test_identical_content_same_checksum(self, tmp_path):
+        """Identical file content always produces the same checksum."""
         data = b"same content here" * 10
         p1 = tmp_path / "a.bin"
         p2 = tmp_path / "b.bin"
@@ -2257,6 +2473,7 @@ class TestFileChecksum:
         assert _file_checksum(str(p1)) == _file_checksum(str(p2))
 
     def test_different_content_different_checksum(self, tmp_path):
+        """Different file content produces different checksums."""
         p1 = tmp_path / "a.bin"
         p2 = tmp_path / "b.bin"
         p1.write_bytes(b"content A")
@@ -2317,12 +2534,14 @@ class TestCollectStale:
         return {"size": st.st_size, "mtime": st.st_mtime}
 
     def test_new_file_not_in_db_is_returned(self, tmp_path):
+        """A file not yet in the DB is added to the compute list."""
         p = tmp_path / "new.bin"
         p.write_bytes(b"data")
         result = _collect_stale([str(p)], {})
         assert str(p) in result
 
     def test_unchanged_file_is_cache_hit(self, tmp_path):
+        """A file with matching size and mtime is a cache hit and not added to compute list."""
         p = tmp_path / "cached.bin"
         p.write_bytes(b"data")
         db = {path_without_drive(str(p)): self._db_entry(str(p))}
@@ -2330,6 +2549,7 @@ class TestCollectStale:
         assert result == []
 
     def test_size_change_makes_stale(self, tmp_path):
+        """A change in file size marks the cache entry as stale and removes it from the DB."""
         p = tmp_path / "file.bin"
         p.write_bytes(b"short")
         k = path_without_drive(str(p))
@@ -2339,6 +2559,7 @@ class TestCollectStale:
         assert k not in db  # stale entry removed
 
     def test_mtime_over_tolerance_makes_stale(self, tmp_path):
+        """A mtime difference beyond the tolerance marks the entry as stale."""
         p = tmp_path / "file.bin"
         p.write_bytes(b"data")
         actual_mtime = os.stat(str(p)).st_mtime
@@ -2348,6 +2569,7 @@ class TestCollectStale:
         assert str(p) in result
 
     def test_mtime_within_tolerance_is_hit(self, tmp_path):
+        """A mtime difference within the tolerance is still treated as a cache hit."""
         p = tmp_path / "file.bin"
         p.write_bytes(b"data")
         actual_mtime = os.stat(str(p)).st_mtime
@@ -2357,6 +2579,7 @@ class TestCollectStale:
         assert result == []
 
     def test_mtime_at_boundary_is_stale(self, tmp_path):
+        """A mtime difference exactly at the tolerance boundary is stale (strict < check)."""
         # Check is `< _TS_TOLERANCE` (strict), so exactly at boundary → stale
         p = tmp_path / "file.bin"
         p.write_bytes(b"data")
@@ -2367,6 +2590,7 @@ class TestCollectStale:
         assert str(p) in result
 
     def test_oserror_on_stat_adds_to_compute_preserves_db_entry(self, tmp_path):
+        """An OSError during stat adds the file to compute but preserves the existing DB entry."""
         p = tmp_path / "file.bin"
         p.write_bytes(b"data")
         k = path_without_drive(str(p))
@@ -2383,9 +2607,11 @@ class TestGroupExactDuplicates:
                 "mtime": 0.0, "ctime": 0.0}
 
     def test_empty_db_returns_empty(self):
+        """An empty DB returns no duplicate groups."""
         assert group_exact_duplicates({}, {}) == []
 
     def test_unique_checksums_no_group(self):
+        """Files with all-different checksums form no duplicate groups."""
         db = {
             "\\a.jpg": self._entry("aaa", 100),
             "\\b.jpg": self._entry("bbb", 200),
@@ -2393,6 +2619,7 @@ class TestGroupExactDuplicates:
         assert group_exact_duplicates(db, {}) == []
 
     def test_two_files_same_checksum_form_one_group(self):
+        """Two files with the same checksum form exactly one duplicate group."""
         db = {
             "\\a.jpg": self._entry("abc123", 100),
             "\\b.jpg": self._entry("abc123", 200),
@@ -2402,6 +2629,7 @@ class TestGroupExactDuplicates:
         assert len(groups[0]) == 2
 
     def test_largest_first_within_group(self):
+        """Within an exact-duplicate group, the file with the larger size appears first."""
         db = {
             "\\small.jpg": self._entry("same", 100),
             "\\large.jpg": self._entry("same", 500),
@@ -2412,6 +2640,7 @@ class TestGroupExactDuplicates:
         assert groups[0][1][1] == 100
 
     def test_multiple_groups_sorted_largest_group_first(self):
+        """Groups are sorted so the group with the most members appears first."""
         db = {
             "\\a1.jpg": self._entry("hash_a", 100),
             "\\a2.jpg": self._entry("hash_a", 100),
@@ -2424,6 +2653,7 @@ class TestGroupExactDuplicates:
         assert len(groups[0]) == 3   # group of 3 first
 
     def test_abs_path_map_fallback(self):
+        """Keys not present in abs_path_map fall back to using the key itself as the path."""
         db = {
             "\\key_a.jpg": self._entry("dup", 100),
             "\\key_b.jpg": self._entry("dup", 100),
@@ -2439,6 +2669,7 @@ class TestGroupExactDuplicates:
 
 class TestBuildExactIndex:
     def test_new_files_hashed_and_counted(self, tmp_path):
+        """New files are checksummed and new_count reflects the number processed."""
         p1 = tmp_path / "a.bin"
         p2 = tmp_path / "b.bin"
         p1.write_bytes(b"file a content")
@@ -2453,6 +2684,7 @@ class TestBuildExactIndex:
         assert len(db) == 2
 
     def test_gone_files_removed(self, tmp_path):
+        """Files no longer on disk are removed from the index and counted in gone_count."""
         p1 = tmp_path / "keep.bin"
         p2 = tmp_path / "gone.bin"
         p1.write_bytes(b"keep")
@@ -2465,6 +2697,7 @@ class TestBuildExactIndex:
         assert len(db) == 1
 
     def test_cache_hit_no_recount(self, tmp_path):
+        """A file unchanged between runs is served from cache (new_count stays 0)."""
         p = tmp_path / "file.bin"
         p.write_bytes(b"stable content")
         db_path = str(tmp_path / "db.csv")
@@ -2473,6 +2706,7 @@ class TestBuildExactIndex:
         assert new_count == 0
 
     def test_error_file_counted(self, tmp_path):
+        """Files that cannot be checksummed (e.g. missing) are counted as errors."""
         p_real = tmp_path / "real.bin"
         p_real.write_bytes(b"real content")
         p_missing = str(tmp_path / "nonexistent.bin")
@@ -2484,6 +2718,7 @@ class TestBuildExactIndex:
         assert path_without_drive(str(p_real)) in db
 
     def test_return_tuple_structure(self, tmp_path):
+        """The return value is a 4-tuple of (db, new_count, gone_count, errors)."""
         p = tmp_path / "file.bin"
         p.write_bytes(b"data")
         db_path = str(tmp_path / "db.csv")
@@ -2516,6 +2751,7 @@ class TestGroupDuplicatesDhash:
 
 class TestCacheIOExtra:
     def test_load_mixed_valid_and_corrupt_rows(self, tmp_path):
+        """Valid rows are loaded successfully even when adjacent rows are corrupt."""
         cache_path = str(tmp_path / "cache.csv")
         with open(cache_path, "w", newline="", encoding="utf-8") as f:
             writer = csv.DictWriter(f, fieldnames=CACHE_FIELDS)
@@ -2529,6 +2765,7 @@ class TestCacheIOExtra:
         assert "\\valid.jpg" in result
 
     def test_load_missing_dhash_column_treated_as_empty(self, tmp_path):
+        """A cache file without a dhash column is loaded with dhash defaulting to empty string."""
         cache_path = str(tmp_path / "cache.csv")
         fields_no_dhash = ["path", "size", "mtime", "phash"]
         with open(cache_path, "w", newline="", encoding="utf-8") as f:
@@ -2541,6 +2778,7 @@ class TestCacheIOExtra:
         assert result["\\photo.jpg"]["dhash"] == ""
 
     def test_save_mkstemp_failure_logs_warning(self, tmp_path, capsys):
+        """An OS error during temp-file creation logs a warning but does not raise."""
         cache_path = str(tmp_path / "cache.csv")
         with patch("tempfile.mkstemp", side_effect=OSError("no space")):
             save_cache(cache_path, {})  # must not raise
@@ -2548,6 +2786,7 @@ class TestCacheIOExtra:
         assert "Warning" in captured.err
 
     def test_save_replace_failure_cleans_up_temp(self, tmp_path, capsys):
+        """An OS error during atomic replace logs a warning and cleans up the temp file."""
         cache_path = str(tmp_path / "cache.csv")
         with patch("os.replace", side_effect=OSError("replace failed")):
             save_cache(cache_path, {})  # must not raise
@@ -2560,6 +2799,7 @@ class TestCacheIOExtra:
 
 class TestBuildHashesExtra:
     def test_mtime_within_tolerance_is_cache_hit(self, tmp_path):
+        """A mtime shift within the tolerance window is treated as a cache hit."""
         p = write_image(tmp_path / "photo.jpg")
         cache = {}
         build_hashes([str(p)], cache)
@@ -2571,6 +2811,7 @@ class TestBuildHashesExtra:
         assert rehashed_count == 0
 
     def test_mtime_just_over_tolerance_triggers_rehash(self, tmp_path):
+        """A mtime shift just over the tolerance triggers a re-hash."""
         p = write_image(tmp_path / "photo.jpg")
         cache = {}
         build_hashes([str(p)], cache)
@@ -2580,6 +2821,7 @@ class TestBuildHashesExtra:
         assert rehashed_count == 1
 
     def test_stat_failure_during_scan_counts_as_error(self, tmp_path):
+        """An OSError during os.stat is counted as an error and the file is skipped."""
         p = write_image(tmp_path / "photo.jpg")
         with patch("idem.os.stat", side_effect=OSError("permission denied")):
             hashes, _, _, error_count = build_hashes([str(p)], {})
@@ -2587,6 +2829,7 @@ class TestBuildHashesExtra:
         assert hashes == {}
 
     def test_mixed_errors_and_successes(self, tmp_path):
+        """Successful hashes and errors are counted independently in the same run."""
         p1 = write_image(tmp_path / "ok1.jpg", color="red")
         p2 = write_image(tmp_path / "ok2.jpg", color="blue")
         p3 = tmp_path / "junk.jpg"
@@ -2663,6 +2906,7 @@ def review_app(tmp_path):
 
 class TestReviewUI:
     def test_image_endpoint_serves_valid_file(self, review_app):
+        """A valid image path served via /image returns HTTP 200."""
         app, tmp_path = review_app
         img_path = str(tmp_path / "photo.jpg")
         with app.test_client() as client:
@@ -2670,12 +2914,14 @@ class TestReviewUI:
         assert resp.status_code == 200
 
     def test_image_endpoint_path_traversal_returns_403(self, review_app):
+        """Path-traversal attempts to /image are rejected with HTTP 403."""
         app, tmp_path = review_app
         with app.test_client() as client:
             resp = client.get("/image?path=../../../etc/passwd")
         assert resp.status_code == 403
 
     def test_image_endpoint_missing_file_returns_404(self, review_app):
+        """A valid but non-existent image path returns HTTP 404."""
         app, tmp_path = review_app
         missing = str(tmp_path / "deleted.jpg")
         with app.test_client() as client:
@@ -2683,6 +2929,7 @@ class TestReviewUI:
         assert resp.status_code == 404
 
     def test_thumbnail_endpoint_path_traversal_returns_403(self, review_app):
+        """Path-traversal attempts to /thumbnail are rejected with HTTP 403."""
         app, tmp_path = review_app
         with app.test_client() as client:
             resp = client.get("/thumbnail?path=../../../etc/passwd")
